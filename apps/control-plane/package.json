@@ -1,0 +1,28 @@
+{
+  "name": "@ai-employee/control-plane",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "typecheck": "tsc -b tsconfig.json",
+    "test": "vitest run",
+    "migrate": "tsx src/db/migrate.ts",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@ai-employee/adapters": "workspace:*",
+    "@ai-employee/core": "workspace:*",
+    "@dbos-inc/dbos-sdk": "^4.27.6",
+    "cron-parser": "5.10.1",
+    "fastify": "^5.2.0",
+    "pg": "^8.13.0",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0"
+  }
+}

@@ -1,0 +1,28 @@
+# Native amd64 builds. gcloud builds submit --config cloudbuild.yaml --substitutions=_TAG=$(git rev-parse --short HEAD) .
+substitutions:
+  _REPO: us-central1-docker.pkg.dev/my-gcp-project/ai-employee
+  _TAG: dev
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+timeout: 2400s
+steps:
+  - id: control-plane
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "apps/control-plane/Dockerfile", "-t", "${_REPO}/control-plane:${_TAG}", "-t", "${_REPO}/control-plane:latest", "."]
+    waitFor: ["-"]
+  - id: runner
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "apps/runner/Dockerfile", "-t", "${_REPO}/runner:${_TAG}", "-t", "${_REPO}/runner:latest", "."]
+    waitFor: ["-"]
+  - id: runner-ops
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "apps/runner/Dockerfile.ops", "--build-arg", "BASE=${_REPO}/runner:${_TAG}", "-t", "${_REPO}/runner-ops:${_TAG}", "-t", "${_REPO}/runner-ops:latest", "."]
+    waitFor: ["runner"]
+images:
+  - ${_REPO}/control-plane:${_TAG}
+  - ${_REPO}/control-plane:latest
+  - ${_REPO}/runner:${_TAG}
+  - ${_REPO}/runner:latest
+  - ${_REPO}/runner-ops:${_TAG}
+  - ${_REPO}/runner-ops:latest

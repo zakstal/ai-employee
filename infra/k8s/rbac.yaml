@@ -1,0 +1,40 @@
+# PROJECT_ID below is a literal placeholder — replace it with the real GCP
+# project id before applying (it is not templated by kustomize/helm here).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: control-plane
+  namespace: ai-employee
+  annotations:
+    iam.gke.io/gcp-service-account: ai-employee-control-plane@PROJECT_ID.iam.gserviceaccount.com
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ai-employee-control-plane
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ai-employee-control-plane
+subjects:
+  - kind: ServiceAccount
+    name: control-plane
+    namespace: ai-employee
+roleRef:
+  kind: ClusterRole
+  name: ai-employee-control-plane
+  apiGroup: rbac.authorization.k8s.io

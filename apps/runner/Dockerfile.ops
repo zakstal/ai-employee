@@ -1,0 +1,11 @@
+# `ops` runner image: `dev` plus Azure CLI.
+#   docker build -f apps/runner/Dockerfile.ops --build-arg BASE=ai-employee-runner:dev -t ai-employee-runner-ops:dev .
+ARG BASE=ai-employee-runner:dev
+FROM ${BASE}
+ARG TARGETARCH
+USER 0
+COPY apps/runner/toolbelt-ops.sh /tmp/toolbelt.sh
+RUN chmod +x /tmp/toolbelt.sh && /tmp/toolbelt.sh "${TARGETARCH:-$(dpkg --print-architecture)}" && rm /tmp/toolbelt.sh
+COPY apps/runner/az-readonly.sh /usr/local/bin/az
+RUN chmod 755 /usr/local/bin/az
+USER 1000:1000

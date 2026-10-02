@@ -1,0 +1,39 @@
+# REGION / PROJECT_ID in the image below are literal placeholders — replace
+# before applying, or template them in CI.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  namespace: ai-employee
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: control-plane
+  template:
+    metadata:
+      labels:
+        app: control-plane
+    spec:
+      serviceAccountName: control-plane
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: control-plane
+          image: REGION-docker.pkg.dev/PROJECT_ID/ai-employee/control-plane:latest
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: control-plane-config
+            - secretRef:
+                name: control-plane-secrets
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi

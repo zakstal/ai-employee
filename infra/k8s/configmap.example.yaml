@@ -1,0 +1,14 @@
+# Copy to configmap.yaml and fill in real values (REGION/PROJECT_ID placeholders,
+# real PUBLIC_BASE_URL) before applying.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: control-plane-config
+  namespace: ai-employee
+data:
+  PORT: "3000"
+  PUBLIC_BASE_URL: "https://ai-employee.example.com"
+  RUNNER_IMAGE: "REGION-docker.pkg.dev/PROJECT_ID/ai-employee/runner:latest"
+  SANDBOX_RUNTIME: "k8s"
+  ROLES_DIR: "/app/apps/control-plane/roles"
+  DEFAULT_EMPLOYEE_ID: "dev"

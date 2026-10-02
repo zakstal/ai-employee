@@ -1,0 +1,27 @@
+# Slack requires an HTTPS callback URL, so this Ingress uses GKE's default
+# ingress class (GCE L7 load balancer) plus a ManagedCertificate for TLS.
+# Replace the placeholder host with the real domain and point its DNS at
+# the Ingress's external IP once provisioned.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: control-plane
+  namespace: ai-employee
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    networking.gke.io/managed-certificates: control-plane-cert
+spec:
+  defaultBackend:
+    service:
+      name: control-plane
+      port:
+        number: 80
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: control-plane-cert
+  namespace: ai-employee
+spec:
+  domains:
+    - ai-employee.example.com

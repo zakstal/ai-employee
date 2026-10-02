@@ -1,0 +1,770 @@
+id: dev
+name: Dev Bot
+defaultRole: developer
+workstreams:
+  sdlc:
+    entryRole: developer
+    description: "triage → spec → implement → review"
+  compound:
+    entryRole: compound
+    description: "compound-engineering lfg: plan → work → simplify → review → PR; learnings captured in docs/solutions"
+# Background monitors. Deterministic collectors, NO model while quiet; a triage task only on something new.
+# All OFF by default — dev-bot turns them on/off via enable_monitor / disable_monitor when asked.
+monitors:
+  azure-errors:
+    collector: azure-errors
+    everyMin: 5
+    role: monitor-triage
+    description: "Azure sweep: new/spiking App Insights exceptions and 5xx per app, plus new Azure Monitor alerts"
+    config:
+      lookbackMin: 15
+      minCount: 5        # SPIKE: at least this many in the window ...
+      spikeFactor: 3     # ... and >= 3x the signature's 24h peak (not just the previous run)
+      minNew: 3          # NEW signatures below this are ignored
+      alerts: true
+      alertCooldownMin: 360  # same alert rule + target at most every 6h
+      apps:
+        # rg = Azure resource group, name = Application Insights component in it
+        - { rg: my-app-prod, name: my-app-prod-insights }
+        - { rg: my-app-staging, name: my-app-staging-insights }
+  clickup-channels:
+    collector: clickup-channels
+    everyMin: 5
+    role: monitor-triage
+    description: "New messages in the dev and support ClickUp channels"
+    config:
+      channels:
+        # id = ClickUp channel id (Chat view URL), name = label used in triage output
+        - { id: abc12-34567, name: support }
+        - { id: abc12-34568, name: support-alerts }
+        - { id: abc12-34569, name: dev }
+roles:
+  - id: assistant
+    description: General engineering assistant. Read-only against the repo it is given.
+    systemPrompt: |
+      You are Dev Bot, an AI engineer on this team. Be concise. Your final message is
+      posted verbatim as the reply in the channel the request came from (a ClickUp task
+      comment or a Slack thread), so write it as that reply: plain prose, no headings, no
+      meta commentary about where it will be posted.
+    allowedTools: [Read, Grep, Glob, WebSearch, WebFetch, "mcp__clickup__*"]
+    mcpServers:
+      clickup:
+        command: clickup-mcp          # @hauptsache.net/clickup-mcp, preinstalled in the runner image
+        env:
+          CLICKUP_API_KEY: "${CLICKUP_API_TOKEN}"
+          CLICKUP_TEAM_ID: "${CLICKUP_TEAM_ID}"
+          CLICKUP_MCP_MODE: read      # read-minimal | read | write
+    maxTurns: 25
+    runtime: k8s
+    cpu: 1
+    memoryMb: 2048
+    timeoutSec: 900
+    # grants: anthropic (ANTHROPIC_API_KEY) | claude-subscription (CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`) | vertex
+    credentials: [anthropic, claude-subscription, clickup]
+  - id: developer
+    description: Works in checked-out repos. May read, edit, run git/gh/pnpm, open pull requests. Cannot merge (enforced by branch protection).
+    systemPromptFile: prompts/foreman.md
+    allowedTools:
+      - Read
+      - Grep
+      - Glob
+      - Edit
+      - Write
+      - WebSearch
+      - WebFetch
+      - "Bash(git *)"
+      - "Bash(gh *)"
+      - "Bash(az *)"
+      - "Bash(pnpm *)"
+      - "Bash(npm *)"
+      - "Bash(npx *)"
+      - "Bash(yarn *)"
+      - "Bash(node *)"
+      - "Bash(python3 *)"
+      - "Bash(bash *)"
+      - "Bash(sh *)"
+      - "Bash(pg-scratch)"
+      - "Bash(psql *)"
+      - "Bash(pg_ctl *)"
+      - "Bash(initdb *)"
+      - "Bash(createdb *)"
+      - "Bash(ls *)"
+      - "Bash(cat *)"
+      - "Bash(head *)"
+      - "Bash(tail *)"
+      - "Bash(wc *)"
+      - "Bash(grep *)"
+      - "Bash(rg *)"
+      - "Bash(find *)"
+      - "Bash(sed *)"
+      - "Bash(awk *)"
+      - "Bash(diff *)"
+      - "Bash(jq *)"
+      - "Bash(sort *)"
+      - "Bash(uniq *)"
+      - "Bash(cut *)"
+      - "Bash(tr *)"
+      - "Bash(xargs *)"
+      - "Bash(mkdir *)"
+      - "Bash(cp *)"
+      - "Bash(mv *)"
+      - "Bash(rm *)"
+      - "Bash(touch *)"
+      - "Bash(chmod *)"
+      - "Bash(env *)"
+      - "Bash(export *)"
+      - "Bash(which *)"
+      - "Bash(echo *)"
+      - "Bash(test *)"
+      - "Bash(cd *)"
+      - "Bash(pwd)"
+      - "mcp__clickup__*"
+    mcpServers:
+      clickup:
+        command: clickup-mcp
+        env:
+          CLICKUP_API_KEY: "${CLICKUP_API_TOKEN}"
+          CLICKUP_TEAM_ID: "${CLICKUP_TEAM_ID}"
+          CLICKUP_MCP_MODE: read
+    repos:
+      - url: https://github.com/your-org/docs.git
+      - url: https://github.com/your-org/legacy-app.git
+      - url: https://github.com/your-org/service-api.git
+    # The foreman waits on its children, so it must outlive them (implement alone may run 90 min).
+    maxTurns: 200  # was 80; raised 2026-09-20 on observed counts
+    runtime: k8s
+    cpu: 2
+    memoryMb: 4096
+    timeoutSec: 9000
+    credentials: [claude-subscription, clickup, github, azure-user]
+    capabilities: [schedules, agents, monitors]
+    canSchedule: [assistant, ops]
+    canSpawn: [triage, spec, implement, review, ops, compound]
+  - id: triage
+    description: TODO
+    systemPromptFile: prompts/triage.md
+    allowedTools:
+      - Read
+      - Grep
+      - Glob
+      - Edit
+      - Write
+      - WebSearch
+      - WebFetch
+      - "Bash(git *)"
+      - "Bash(gh *)"
+      - "Bash(pnpm *)"
+      - "Bash(npm *)"
+      - "Bash(npx *)"
+      - "Bash(yarn *)"
+      - "Bash(node *)"
+      - "Bash(python3 *)"
+      - "Bash(bash *)"
+      - "Bash(sh *)"
+      - "Bash(pg-scratch)"
+      - "Bash(psql *)"
+      - "Bash(pg_ctl *)"
+      - "Bash(initdb *)"
+      - "Bash(createdb *)"
+      - "Bash(ls *)"
+      - "Bash(cat *)"
+      - "Bash(head *)"
+      - "Bash(tail *)"
+      - "Bash(wc *)"
+      - "Bash(grep *)"
+      - "Bash(rg *)"
+      - "Bash(find *)"
+      - "Bash(sed *)"
+      - "Bash(awk *)"
+      - "Bash(diff *)"
+      - "Bash(jq *)"
+      - "Bash(sort *)"
+      - "Bash(uniq *)"
+      - "Bash(cut *)"
+      - "Bash(tr *)"
+      - "Bash(xargs *)"
+      - "Bash(mkdir *)"
+      - "Bash(cp *)"
+      - "Bash(mv *)"
+      - "Bash(rm *)"
+      - "Bash(touch *)"
+      - "Bash(chmod *)"
+      - "Bash(env *)"
+      - "Bash(export *)"
+      - "Bash(which *)"
+      - "Bash(echo *)"
+      - "Bash(test *)"
+      - "Bash(cd *)"
+      - "Bash(pwd)"
+      - "mcp__clickup__*"
+    mcpServers:
+      clickup:
+        command: clickup-mcp
+        env:
+          CLICKUP_API_KEY: "${CLICKUP_API_TOKEN}"
+          CLICKUP_TEAM_ID: "${CLICKUP_TEAM_ID}"
+          CLICKUP_MCP_MODE: read
+    repos:
+      - url: https://github.com/your-org/app.git
+      - url: https://github.com/your-org/docs.git
+      - url: https://github.com/your-org/legacy-app.git
+      - url: https://github.com/your-org/service-api.git
+    # Real budgets: implement was dying at the 50-turn default mid-PR, ~$1.30 wasted per run.
+    maxTurns: 100  # was 40; raised 2026-09-20 on observed counts
+    timeoutSec: 1800
+    image: ai-employee-runner-ops:dev  # these roles are told `az` works; the dev image has no az
+    runtime: cloudrun  # isolated tier; chat stays on the warm runner
+    # No azure-user: the token broker lives on the VM's compose network, unreachable from
+    # Cloud Run. Azure evidence reaches these roles in the brief, already collected.
+    credentials: [claude-subscription, clickup, github]
+  - id: spec
+    description: TODO
+    systemPromptFile: prompts/spec.md
+    allowedTools:
+      - Read
+      - Grep
+      - Glob
+      - Edit
+      - Write
+      - WebSearch
+      - WebFetch
+      - "Bash(git *)"
+      - "Bash(gh *)"
+      - "Bash(pnpm *)"
+      - "Bash(npm *)"
+      - "Bash(npx *)"
+      - "Bash(yarn *)"
+      - "Bash(node *)"
+      - "Bash(python3 *)"
+      - "Bash(bash *)"
+      - "Bash(sh *)"
+      - "Bash(pg-scratch)"
+      - "Bash(psql *)"
+      - "Bash(pg_ctl *)"
+      - "Bash(initdb *)"
+      - "Bash(createdb *)"
+      - "Bash(ls *)"
+      - "Bash(cat *)"
+      - "Bash(head *)"
+      - "Bash(tail *)"
+      - "Bash(wc *)"
+      - "Bash(grep *)"
+      - "Bash(rg *)"
+      - "Bash(find *)"
+      - "Bash(sed *)"
+      - "Bash(awk *)"
+      - "Bash(diff *)"
+      - "Bash(jq *)"
+      - "Bash(sort *)"
+      - "Bash(uniq *)"
+      - "Bash(cut *)"
+      - "Bash(tr *)"
+      - "Bash(xargs *)"
+      - "Bash(mkdir *)"
+      - "Bash(cp *)"
+      - "Bash(mv *)"
+      - "Bash(rm *)"
+      - "Bash(touch *)"
+      - "Bash(chmod *)"
+      - "Bash(env *)"
+      - "Bash(export *)"
+      - "Bash(which *)"
+      - "Bash(echo *)"
+      - "Bash(test *)"
+      - "Bash(cd *)"
+      - "Bash(pwd)"
+      - "mcp__clickup__*"
+    mcpServers:
+      clickup:
+        command: clickup-mcp
+        env:
+          CLICKUP_API_KEY: "${CLICKUP_API_TOKEN}"
+          CLICKUP_TEAM_ID: "${CLICKUP_TEAM_ID}"
+          CLICKUP_MCP_MODE: read
+    repos:
+      - url: https://github.com/your-org/app.git
+      - url: https://github.com/your-org/docs.git
+      - url: https://github.com/your-org/legacy-app.git
+      - url: https://github.com/your-org/service-api.git
+    # Real budgets: implement was dying at the 50-turn default mid-PR, ~$1.30 wasted per run.
+    maxTurns: 120  # was 60; raised 2026-09-20 on observed counts
+    timeoutSec: 2400
+    image: ai-employee-runner-ops:dev  # these roles are told `az` works; the dev image has no az
+    runtime: cloudrun  # isolated tier; chat stays on the warm runner
+    # No azure-user: the token broker lives on the VM's compose network, unreachable from
+    # Cloud Run. Azure evidence reaches these roles in the brief, already collected.
+    credentials: [claude-subscription, clickup, github]
+  - id: implement
+    description: TODO
+    systemPromptFile: prompts/implement.md
+    allowedTools:
+      - Read
+      - Grep
+      - Glob
+      - Edit
+      - Write
+      - WebSearch
+      - WebFetch
+      - "Bash(git *)"
+      - "Bash(gh *)"
+      - "Bash(pnpm *)"
+      - "Bash(npm *)"
+      - "Bash(npx *)"
+      - "Bash(yarn *)"
+      - "Bash(node *)"
+      - "Bash(python3 *)"
+      - "Bash(bash *)"
+      - "Bash(sh *)"
+      - "Bash(pg-scratch)"
+      - "Bash(psql *)"
+      - "Bash(pg_ctl *)"
+      - "Bash(initdb *)"
+      - "Bash(createdb *)"
+      - "Bash(ls *)"
+      - "Bash(cat *)"
+      - "Bash(head *)"
+      - "Bash(tail *)"
+      - "Bash(wc *)"
+      - "Bash(grep *)"
+      - "Bash(rg *)"
+      - "Bash(find *)"
+      - "Bash(sed *)"
+      - "Bash(awk *)"
+      - "Bash(diff *)"
+      - "Bash(jq *)"
+      - "Bash(sort *)"
+      - "Bash(uniq *)"
+      - "Bash(cut *)"
+      - "Bash(tr *)"
+      - "Bash(xargs *)"
+      - "Bash(mkdir *)"
+      - "Bash(cp *)"
+      - "Bash(mv *)"
+      - "Bash(rm *)"
+      - "Bash(touch *)"
+      - "Bash(chmod *)"
+      - "Bash(env *)"
+      - "Bash(export *)"
+      - "Bash(which *)"
+      - "Bash(echo *)"
+      - "Bash(test *)"
+      - "Bash(cd *)"
+      - "Bash(pwd)"
+      - "mcp__clickup__*"
+    mcpServers:
+      clickup:
+        command: clickup-mcp
+        env:
+          CLICKUP_API_KEY: "${CLICKUP_API_TOKEN}"
+          CLICKUP_TEAM_ID: "${CLICKUP_TEAM_ID}"
+          CLICKUP_MCP_MODE: read
+    repos:
+      - url: https://github.com/your-org/app.git
+      - url: https://github.com/your-org/docs.git
+      - url: https://github.com/your-org/legacy-app.git
+      - url: https://github.com/your-org/service-api.git
+    # Real budgets: implement was dying at the 50-turn default mid-PR, ~$1.30 wasted per run.
+    # Raised 150 -> 400 (2026-09-20): one ticket needed 5 dispatches, every one dying at the 150-turn
+    # cap (never time) mid multi-service change, ~$38 total and no final report. Turns were the
+    # binding constraint well inside the 90-minute timeout, so timeoutSec is unchanged.
+    maxTurns: 400
+    timeoutSec: 5400
+    image: ai-employee-runner-ops:dev  # these roles are told `az` works; the dev image has no az
+    runtime: cloudrun  # isolated tier; chat stays on the warm runner
+    # No azure-user: the token broker lives on the VM's compose network, unreachable from
+    # Cloud Run. Azure evidence reaches these roles in the brief, already collected.
+    credentials: [claude-subscription, clickup, github]
+  - id: review
+    description: TODO
+    systemPromptFile: prompts/review.md
+    allowedTools:
+      - Read
+      - Grep
+      - Glob
+      - Edit
+      - Write
+      - WebSearch
+      - WebFetch
+      - "Bash(git *)"
+      - "Bash(gh *)"
+      - "Bash(pnpm *)"
+      - "Bash(npm *)"
+      - "Bash(npx *)"
+      - "Bash(yarn *)"
+      - "Bash(node *)"
+      - "Bash(python3 *)"
+      - "Bash(bash *)"
+      - "Bash(sh *)"
+      - "Bash(pg-scratch)"
+      - "Bash(psql *)"
+      - "Bash(pg_ctl *)"
+      - "Bash(initdb *)"
+      - "Bash(createdb *)"
+      - "Bash(ls *)"
+      - "Bash(cat *)"
+      - "Bash(head *)"
+      - "Bash(tail *)"
+      - "Bash(wc *)"
+      - "Bash(grep *)"
+      - "Bash(rg *)"
+      - "Bash(find *)"
+      - "Bash(sed *)"
+      - "Bash(awk *)"
+      - "Bash(diff *)"
+      - "Bash(jq *)"
+      - "Bash(sort *)"
+      - "Bash(uniq *)"
+      - "Bash(cut *)"
+      - "Bash(tr *)"
+      - "Bash(xargs *)"
+      - "Bash(mkdir *)"
+      - "Bash(cp *)"
+      - "Bash(mv *)"
+      - "Bash(rm *)"
+      - "Bash(touch *)"
+      - "Bash(chmod *)"
+      - "Bash(env *)"
+      - "Bash(export *)"
+      - "Bash(which *)"
+      - "Bash(echo *)"
+      - "Bash(test *)"
+      - "Bash(cd *)"
+      - "Bash(pwd)"
+      - "mcp__clickup__*"
+    mcpServers:
+      clickup:
+        command: clickup-mcp
+        env:
+          CLICKUP_API_KEY: "${CLICKUP_API_TOKEN}"
+          CLICKUP_TEAM_ID: "${CLICKUP_TEAM_ID}"
+          CLICKUP_MCP_MODE: read
+    repos:
+      - url: https://github.com/your-org/app.git
+      - url: https://github.com/your-org/docs.git
+      - url: https://github.com/your-org/legacy-app.git
+      - url: https://github.com/your-org/service-api.git
+    # Real budgets: implement was dying at the 50-turn default mid-PR, ~$1.30 wasted per run.
+    maxTurns: 150  # was 40; raised 2026-09-20 on observed counts
+    timeoutSec: 1800
+    image: ai-employee-runner-ops:dev  # these roles are told `az` works; the dev image has no az
+    runtime: cloudrun  # isolated tier; chat stays on the warm runner
+    # No azure-user: the token broker lives on the VM's compose network, unreachable from
+    # Cloud Run. Azure evidence reaches these roles in the brief, already collected.
+    credentials: [claude-subscription, clickup, github]
+  - id: compound
+    description: Runs the compound-engineering `lfg` pipeline on a brief inside a checked-out repo and ends with an open PR. Hands-off; never merges.
+    systemPromptFile: prompts/compound.md
+    allowedTools:
+      - Read
+      - Grep
+      - Glob
+      - Edit
+      - Write
+      - WebSearch
+      - WebFetch
+      - Skill
+      - Agent
+      - TodoWrite
+      - "Bash(git *)"
+      - "Bash(gh *)"
+      - "Bash(pnpm *)"
+      - "Bash(npm *)"
+      - "Bash(npx *)"
+      - "Bash(node *)"
+      - "Bash(python3 *)"
+      - "Bash(bash *)"
+      - "Bash(ls *)"
+      - "Bash(cat *)"
+      - "Bash(mkdir *)"
+      - "Bash(cp *)"
+      - "Bash(mv *)"
+      - "Bash(rg *)"
+      - "Bash(grep *)"
+      - "Bash(find *)"
+      - "Bash(sed *)"
+      - "Bash(head *)"
+      - "Bash(tail *)"
+      - "Bash(wc *)"
+      - "Bash(diff *)"
+      - "Bash(jq *)"
+      - "Bash(test *)"
+      - "Bash(echo *)"
+      - "Bash(pwd)"
+      - "Bash(cd *)"
+      - "mcp__clickup__*"
+    mcpServers:
+      clickup:
+        command: clickup-mcp
+        env:
+          CLICKUP_API_KEY: "${CLICKUP_API_TOKEN}"
+          CLICKUP_TEAM_ID: "${CLICKUP_TEAM_ID}"
+          CLICKUP_MCP_MODE: read
+    repos:
+      - url: https://github.com/your-org/app.git
+      - url: https://github.com/your-org/docs.git
+      - url: https://github.com/your-org/legacy-app.git
+      - url: https://github.com/your-org/service-api.git
+    maxTurns: 300
+    # Isolated tier: one Cloud Run Job execution per run, never the warm chat runner.
+    runtime: cloudrun
+    cpu: 2
+    memoryMb: 4096
+    timeoutSec: 5400
+    credentials: [claude-subscription, clickup, github]
+  - id: schema-lead
+    description: Schema design lead. Runs on Opus. Coordinates one schema ticket at a time on a shared schema branch.
+    systemPromptFile: prompts/foreman.md
+    model: claude-opus-5
+    allowedTools:
+      - Read
+      - Grep
+      - Glob
+      - Edit
+      - Write
+      - WebSearch
+      - WebFetch
+      - "Bash(git *)"
+      - "Bash(gh *)"
+      - "Bash(pnpm *)"
+      - "Bash(npm *)"
+      - "Bash(npx *)"
+      - "Bash(node *)"
+      - "Bash(python3 *)"
+      - "Bash(bash *)"
+      - "Bash(sh *)"
+      - "Bash(pg-scratch)"
+      - "Bash(psql *)"
+      - "Bash(pg_ctl *)"
+      - "Bash(initdb *)"
+      - "Bash(createdb *)"
+      - "Bash(ls *)"
+      - "Bash(cat *)"
+      - "Bash(head *)"
+      - "Bash(tail *)"
+      - "Bash(wc *)"
+      - "Bash(grep *)"
+      - "Bash(rg *)"
+      - "Bash(find *)"
+      - "Bash(sed *)"
+      - "Bash(awk *)"
+      - "Bash(jq *)"
+      - "Bash(sort *)"
+      - "Bash(uniq *)"
+      - "Bash(cut *)"
+      - "Bash(mkdir *)"
+      - "Bash(cp *)"
+      - "Bash(mv *)"
+      - "Bash(echo *)"
+      - "Bash(test *)"
+      - "Bash(cd *)"
+      - "Bash(pwd)"
+    repos:
+      - url: https://github.com/your-org/docs.git
+      - url: https://github.com/your-org/app.git
+      - url: https://github.com/your-org/legacy-app.git
+    # PS-04 hit BOTH ceilings: 182 of 200 turns and the 9000s timeout, after 28 useful commits.
+    maxTurns: 500
+    runtime: cloudrun   # isolated tier: this role provisions 4GiB and starts pg-scratch; it OOM'd the 4GiB VM
+    cpu: 2
+    memoryMb: 4096
+    timeoutSec: 25200   # 7h — these tickets are 16-20h of agent work and resume from git
+    credentials: [claude-subscription, github]
+    capabilities: [agents]
+    canSpawn: [schema-implement, schema-review]
+  - id: schema-implement
+    description: Schema implementation. Runs on Opus.
+    systemPromptFile: prompts/implement.md
+    model: claude-opus-5
+    allowedTools:
+      - Read
+      - Grep
+      - Glob
+      - Edit
+      - Write
+      - WebSearch
+      - WebFetch
+      - "Bash(git *)"
+      - "Bash(gh *)"
+      - "Bash(pnpm *)"
+      - "Bash(npm *)"
+      - "Bash(npx *)"
+      - "Bash(node *)"
+      - "Bash(python3 *)"
+      - "Bash(bash *)"
+      - "Bash(sh *)"
+      - "Bash(pg-scratch)"
+      - "Bash(psql *)"
+      - "Bash(pg_ctl *)"
+      - "Bash(initdb *)"
+      - "Bash(createdb *)"
+      - "Bash(ls *)"
+      - "Bash(cat *)"
+      - "Bash(head *)"
+      - "Bash(tail *)"
+      - "Bash(wc *)"
+      - "Bash(grep *)"
+      - "Bash(rg *)"
+      - "Bash(find *)"
+      - "Bash(sed *)"
+      - "Bash(awk *)"
+      - "Bash(jq *)"
+      - "Bash(sort *)"
+      - "Bash(uniq *)"
+      - "Bash(cut *)"
+      - "Bash(mkdir *)"
+      - "Bash(cp *)"
+      - "Bash(mv *)"
+      - "Bash(echo *)"
+      - "Bash(test *)"
+      - "Bash(cd *)"
+      - "Bash(pwd)"
+    repos:
+      - url: https://github.com/your-org/docs.git
+      - url: https://github.com/your-org/app.git
+      - url: https://github.com/your-org/legacy-app.git
+    maxTurns: 400
+    runtime: cloudrun
+    cpu: 2
+    memoryMb: 4096
+    timeoutSec: 5400
+    credentials: [claude-subscription, github]
+  - id: schema-review
+    description: Schema review. Runs on Opus.
+    systemPromptFile: prompts/review.md
+    model: claude-opus-5
+    allowedTools:
+      - Read
+      - Grep
+      - Glob
+      - Edit
+      - Write
+      - WebSearch
+      - WebFetch
+      - "Bash(git *)"
+      - "Bash(gh *)"
+      - "Bash(pnpm *)"
+      - "Bash(npm *)"
+      - "Bash(npx *)"
+      - "Bash(node *)"
+      - "Bash(python3 *)"
+      - "Bash(bash *)"
+      - "Bash(sh *)"
+      - "Bash(pg-scratch)"
+      - "Bash(psql *)"
+      - "Bash(pg_ctl *)"
+      - "Bash(initdb *)"
+      - "Bash(createdb *)"
+      - "Bash(ls *)"
+      - "Bash(cat *)"
+      - "Bash(head *)"
+      - "Bash(tail *)"
+      - "Bash(wc *)"
+      - "Bash(grep *)"
+      - "Bash(rg *)"
+      - "Bash(find *)"
+      - "Bash(sed *)"
+      - "Bash(awk *)"
+      - "Bash(jq *)"
+      - "Bash(sort *)"
+      - "Bash(uniq *)"
+      - "Bash(cut *)"
+      - "Bash(mkdir *)"
+      - "Bash(cp *)"
+      - "Bash(mv *)"
+      - "Bash(echo *)"
+      - "Bash(test *)"
+      - "Bash(cd *)"
+      - "Bash(pwd)"
+    repos:
+      - url: https://github.com/your-org/docs.git
+      - url: https://github.com/your-org/app.git
+      - url: https://github.com/your-org/legacy-app.git
+    maxTurns: 150
+    runtime: cloudrun
+    cpu: 2
+    memoryMb: 4096
+    timeoutSec: 1800
+    credentials: [claude-subscription, github]
+  - id: manager
+    description: Owns the migration backlog. Woken when backlog work finishes; dispatches what is unblocked. Writes no code.
+    systemPromptFile: prompts/manager.md
+    allowedTools:
+      - Read
+      - Grep
+      - Glob
+      - WebFetch
+      - "Bash(gh *)"
+      - "Bash(git *)"
+      - "Bash(jq *)"
+      - "mcp__clickup__*"
+    mcpServers:
+      clickup:
+        command: clickup-mcp
+        env:
+          CLICKUP_API_KEY: "${CLICKUP_API_TOKEN}"
+          CLICKUP_TEAM_ID: "${CLICKUP_TEAM_ID}"
+          CLICKUP_MCP_MODE: write   # it keeps the backlog page current
+    maxTurns: 60
+    runtime: k8s
+    cpu: 1
+    memoryMb: 2048
+    timeoutSec: 1800
+    credentials: [claude-subscription, clickup, github]
+    capabilities: [agents, backlog]
+    canSpawn: [developer, compound, triage, spec, implement, review, schema-lead]
+  - id: monitor-triage
+    description: Sonnet triage for monitor findings. Says NOISE (posts nothing) or a short alert in dev-bot. Read-only.
+    systemPromptFile: prompts/monitor-triage.md
+    model: sonnet
+    allowedTools:
+      - Read
+      - Grep
+      - WebFetch
+      - "Bash(az *)"
+      - "Bash(gh search prs *)"
+      - "Bash(gh pr list *)"
+      - "Bash(gh pr view *)"
+      - "mcp__clickup__*"
+    mcpServers:
+      clickup:
+        command: clickup-mcp
+        env:
+          CLICKUP_API_KEY: "${CLICKUP_API_TOKEN}"
+          CLICKUP_TEAM_ID: "${CLICKUP_TEAM_ID}"
+          CLICKUP_MCP_MODE: read
+    maxTurns: 20
+    runtime: k8s
+    cpu: 1
+    memoryMb: 2048
+    timeoutSec: 900
+    credentials: [claude-subscription, clickup, azure-user, github]
+    # Escalation: may hand a real finding to the developer (sdlc) or compound workstream. Fire-and-forget; the
+    # workstream's final report is relayed to dev-bot when it finishes (postResult orphan-child relay).
+    capabilities: [agents]
+    canSpawn: [developer, compound]
+  - id: ops
+    description: Read-only operations. May run az and gh read commands and query ClickUp.
+    image: ai-employee-runner-ops:dev
+    systemPrompt: |
+      You are Dev Bot in ops mode. You may inspect cloud state with the CLIs available but must not
+      mutate anything. If a tool is unauthenticated, say so plainly and stop.
+    allowedTools:
+      - Read
+      - Grep
+      - Glob
+      - "Bash(az *)"
+      - "Bash(gh *)"
+      - "mcp__clickup__*"
+    mcpServers:
+      clickup:
+        command: clickup-mcp
+        env:
+          CLICKUP_API_KEY: "${CLICKUP_API_TOKEN}"
+          CLICKUP_TEAM_ID: "${CLICKUP_TEAM_ID}"
+          CLICKUP_MCP_MODE: read
+    maxTurns: 15
+    runtime: k8s
+    cpu: 1
+    memoryMb: 2048
+    timeoutSec: 600
+    credentials: [claude-subscription, clickup, azure, azure-user, github]

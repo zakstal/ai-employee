@@ -1,0 +1,10 @@
+# gcloud builds submit --config infra/azbroker/cloudbuild.yaml --substitutions=_TAG=1 infra/azbroker
+substitutions:
+  _REPO: us-central1-docker.pkg.dev/my-gcp-project/ai-employee
+  _TAG: "1"
+options:
+  logging: CLOUD_LOGGING_ONLY
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_REPO}/azbroker:${_TAG}", "-t", "${_REPO}/azbroker:latest", "."]
+images: ["${_REPO}/azbroker:${_TAG}", "${_REPO}/azbroker:latest"]

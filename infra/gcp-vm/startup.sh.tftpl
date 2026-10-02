@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# Idempotent: Compute Engine re-runs metadata_startup_script on every boot, not just
+# the first one. Every step below is safe to repeat (install checks, file overwrites,
+# `docker compose up -d`, `systemctl enable --now`).
+set -euo pipefail
+
+APP_DIR=/opt/ai-employee
+mkdir -p "$APP_DIR"
+
+# --- Docker CE + compose plugin, from the official Docker apt repo ---------
+if ! command -v docker >/dev/null 2>&1; then
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  ARCH=$(dpkg --print-architecture)
+  CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
+  echo "deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $CODENAME stable" \
+    > /etc/apt/sources.list.d/docker.list
+  apt-get update -y
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+fi
+
+# --- gcloud CLI, from the official Google Cloud apt repo --------------------
+# debian-cloud/debian-12 does not ship gcloud; the VM needs it to pull secrets and
+# to `auth configure-docker` for Artifact Registry pulls.
+if ! command -v gcloud >/dev/null 2>&1; then
+  apt-get update -y
+  apt-get install -y apt-transport-https ca-certificates gnupg curl
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+    > /etc/apt/sources.list.d/google-cloud-sdk.list
+  apt-get update -y
+  apt-get install -y google-cloud-cli
+fi
+
+# The VM's own service account (roles/artifactregistry.reader) grants the pull;
+# this just points Docker's credential helper at Artifact Registry.
+gcloud auth configure-docker "${region}-docker.pkg.dev" --quiet
+
+# --- Fetch secrets from Secret Manager --------------------------------------
+# Skip cleanly (empty value, no .env line) if a secret has no version yet -- see
+# infra/gcp-cloudrun/secrets.tf, which always creates the shell but only writes a
+# version when a real value was supplied at apply time.
+fetch_secret() {
+  gcloud secrets versions access latest --secret="$1" --project="${project_id}" 2>/dev/null || true
+}
+
+DATABASE_URL_RAW=$(fetch_secret database-url)
+DBOS_SYSTEM_DATABASE_URL_RAW=$(fetch_secret dbos-system-database-url)
+CLAUDE_CODE_OAUTH_TOKEN=$(fetch_secret claude-code-oauth-token)
+CLICKUP_API_TOKEN=$(fetch_secret clickup-api-token)
+CLICKUP_WEBHOOK_SECRET=$(fetch_secret clickup-webhook-secret)
+CLICKUP_CHAT_SECRET=$(fetch_secret clickup-chat-secret)
+GH_TOKEN=$(fetch_secret gh-token)
+
+# infra/gcp-cloudrun writes these in Cloud Run's socket form:
+#   postgres://u:p@localhost/db?host=/cloudsql/<conn>
+# On the VM there's no /cloudsql socket -- the cloudsql-proxy container listens on
+# TCP instead, so rewrite to: postgres://u:p@cloudsql:5432/db
+rewrite_db_url() {
+  echo "$1" | sed -E 's#@localhost/#@cloudsql:5432/#; s#\?host=/cloudsql/[^&[:space:]]*##'
+}
+DATABASE_URL=$(rewrite_db_url "$DATABASE_URL_RAW")
+DBOS_SYSTEM_DATABASE_URL=$(rewrite_db_url "$DBOS_SYSTEM_DATABASE_URL_RAW")
+
+# --- Write .env (mode 600: OAuth token, ClickUp/GH secrets, RUNNER_TOKEN) ---
+umask 077
+cat > "$APP_DIR/.env" <<ENV_EOF
+DATABASE_URL=$DATABASE_URL
+DBOS_SYSTEM_DATABASE_URL=$DBOS_SYSTEM_DATABASE_URL
+CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN
+CLICKUP_API_TOKEN=$CLICKUP_API_TOKEN
+CLICKUP_WEBHOOK_SECRET=$CLICKUP_WEBHOOK_SECRET
+CLICKUP_CHAT_SECRET=$CLICKUP_CHAT_SECRET
+GH_TOKEN=$GH_TOKEN
+PORT=3000
+PUBLIC_BASE_URL=https://${host}
+SANDBOX_RUNTIME=warm
+# Manager: woken only when a task carrying source.managedBy finishes, debounced.
+MANAGER_ROLE=manager
+MANAGER_DEBOUNCE_SEC=300
+MANAGER_HEARTBEAT_MIN=60
+# DBOS executor id: recovery only picks up workflows started by THIS control plane. The parked
+# Cloud Run control plane shares the system DB and once "recovered" a VM workflow without a warm runner.
+DBOS__VMID=vm
+WARM_RUNNER_URL=http://runner:8080
+RUNNER_TOKEN=${runner_token}
+GCP_PROJECT=${project_id}
+GCP_REGION=${region}
+CLOUDRUN_JOB_PREFIX=${name}
+ROLES_DIR=/app/apps/control-plane/roles
+%{ if azbroker_image != "" ~}
+AZURE_BROKER_URL=http://azbroker:8081
+AZURE_BROKER_SECRET=${azure_broker_secret}
+AZURE_TENANT_ID=${azure_tenant_id}
+AZURE_SUBSCRIPTION_ID=${azure_subscription_id}
+%{ endif ~}
+%{ for k, v in env ~}
+${k}=${v}
+%{ endfor ~}
+ENV_EOF
+chmod 600 "$APP_DIR/.env"
+
+# --- docker-compose.yml ------------------------------------------------------
+cat > "$APP_DIR/docker-compose.yml" <<COMPOSE_EOF
+# Container logs go to Cloud Logging (docker gcplogs driver; the VM service account has logging.logWriter).
+x-logging: &gcplogs
+  driver: gcplogs
+  options:
+    gcp-project: "${project_id}"
+    labels: "service"
+services:
+  # Cloud SQL Auth Proxy: authenticates via the VM's service account
+  # (roles/cloudsql.client), no key file needed.
+  cloudsql:
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2
+    logging: *gcplogs
+    labels: { service: "cloudsql" }
+    command: ["--address", "0.0.0.0", "--port", "5432", "${cloudsql_connection_name}"]
+    restart: always
+
+  control-plane:
+    image: ${control_plane_image}
+    logging: *gcplogs
+    labels: { service: "control-plane" }
+    env_file: .env
+    depends_on:
+      - cloudsql
+    restart: always
+    # No ports published -- only Caddy talks to this, over the compose network.
+
+  runner:
+    image: ${runner_image}
+    logging: *gcplogs
+    labels: { service: "runner" }
+    environment:
+      RUNNER_MODE: server
+      RUNNER_PORT: "8080"
+      RUNNER_TOKEN: "${runner_token}"
+      RUNNER_MAX_CONCURRENCY: "4"
+      WORKSPACE_DIR: /workspace
+    volumes:
+      - runner_workspace:/workspace
+      # Claude Code session transcripts (per-conversation `--resume`); skills stay baked in the image.
+      - runner_claude_projects:/home/node/.claude/projects
+    restart: always
+    # The runner's child processes (Claude Code, git, ClickUp/GitHub API calls)
+    # need outbound internet to Anthropic, ClickUp, and GitHub -- the default
+    # VPC egress path covers this; nothing extra to open.
+
+%{ if azbroker_image != "" ~}
+  # Azure token broker: holds one human `az login`; the runner's `az login --identity`
+  # fetches hourly tokens from it. Internal only (no published port).
+  azbroker:
+    image: ${azbroker_image}
+    logging: *gcplogs
+    labels: { service: "azbroker" }
+    environment:
+      BROKER_SECRET: "${azure_broker_secret}"
+    volumes:
+      - azbroker_azure:/azure
+    restart: always
+%{ endif ~}
+
+  caddy:
+    image: caddy:2
+    logging: *gcplogs
+    labels: { service: "caddy" }
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - control-plane
+    restart: always
+
+volumes:
+  runner_workspace:
+  runner_claude_projects:
+  caddy_data:
+  caddy_config:
+%{ if azbroker_image != "" ~}
+  azbroker_azure:
+%{ endif ~}
+COMPOSE_EOF
+
+# --- Caddyfile: automatic HTTPS for the sslip.io hostname -------------------
+cat > "$APP_DIR/Caddyfile" <<CADDY_EOF
+${host} {
+	reverse_proxy control-plane:3000
+}
+CADDY_EOF
+
+cd "$APP_DIR"
+docker compose up -d --pull always
+
+# --- systemd: bring the stack up on boot, prune images/containers daily -----
+cat > /etc/systemd/system/ai-employee.service <<'UNIT_EOF'
+[Unit]
+Description=AI Employee stack (docker compose)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/ai-employee
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+cat > /etc/systemd/system/ai-employee-prune.service <<'UNIT_EOF'
+[Unit]
+Description=Prune unused Docker images/containers/networks
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker system prune -af
+UNIT_EOF
+
+cat > /etc/systemd/system/ai-employee-prune.timer <<'UNIT_EOF'
+[Unit]
+Description=Daily docker system prune
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT_EOF
+
+systemctl daemon-reload
+systemctl enable --now ai-employee.service
+systemctl enable --now ai-employee-prune.timer

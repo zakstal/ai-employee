@@ -1,0 +1,13 @@
+node_modules
+dist
+.env
+*.local
+.DS_Store
+*.tsbuildinfo
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform.lock.hcl
+.env.bak*
+*.tfplan
