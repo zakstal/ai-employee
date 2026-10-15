@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { CredentialSpec } from "@ai-employee/core";
 import { providerFor } from "../credentials/index.js";
+import { scheduleProblem } from "../schedules/reconcile.js";
 import { resolveEffectiveConfig, type ResolveOptions } from "./resolve.js";
 
 export interface CheckOptions extends ResolveOptions {
@@ -9,7 +10,7 @@ export interface CheckOptions extends ResolveOptions {
 }
 
 type Role = { credentials: string[]; canSpawn: string[]; canSchedule: string[]; mcpServers: Record<string, unknown>; mcpServersResolvable: string[] };
-type Emp = { credentials?: Record<string, CredentialSpec>; defaultRole: string; roles: Record<string, Role>; workstreams: Record<string, { entryRole: string }>; monitors: Record<string, { role: string }> };
+type Emp = { credentials?: Record<string, CredentialSpec>; defaultRole: string; roles: Record<string, Role>; workstreams: Record<string, { entryRole: string }>; monitors: Record<string, { role: string }>; schedulesInConfig?: Record<string, { cron: string; timezone: string; role: string }> };
 
 /** Every problem found, empty when the config is sound. Schema, prompt files and extends errors surface from the loader as one problem. */
 export async function checkConfig(opts: CheckOptions): Promise<string[]> {
@@ -29,6 +30,10 @@ export async function checkConfig(opts: CheckOptions): Promise<string[]> {
     ref("defaultRole", e.defaultRole);
     for (const [n, w] of Object.entries(e.workstreams)) ref(`workstream ${n} entryRole`, w.entryRole);
     for (const [n, m] of Object.entries(e.monitors)) ref(`monitor ${n} role`, m.role);
+    for (const [n, sc] of Object.entries(e.schedulesInConfig ?? {})) {
+      const bad = scheduleProblem({ id, roles: Object.keys(e.roles).map((rid) => ({ id: rid }) as never) }, n, sc.cron, sc.timezone, sc.role);
+      if (bad) problems.push(bad);
+    }
     if (managerRole) ref("manager role", managerRole);
     for (const [rid, r] of Object.entries(e.roles)) {
       for (const t of r.canSpawn) ref(`role ${rid} canSpawn`, t);

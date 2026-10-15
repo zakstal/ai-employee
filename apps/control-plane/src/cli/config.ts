@@ -5,9 +5,10 @@ import { checkConfig } from "./check.js";
 import { resolveEffectiveConfig } from "./resolve.js";
 
 const USAGE = `usage: config resolve [--dir <config dir>]... [--out <dir>] [--prompts full] [--sandbox-runtime k8s|local|cloudrun|warm]
-                      [--manager-role <id>] [--live-env-names <file>] [--env KEY=VALUE]...
+                      [--manager-role <id>] [--live-env-names <file>] [--env KEY=VALUE]... [--live-url <url> [--token-env VAR]]
        config check   [--dir <config dir>]... [--manager-role <id>] [--sandbox-runtime ...] [--public --deny-file <file>]
 --env sets a non-secret control-plane setting for the dump (RUNNER_IMAGES, CLOUDRUN_JOB_PREFIX, ...), repeatable.
+--live-url (resolve) adds each employee's runtime-created schedules from a running control plane (token read from env var --token-env).
 resolve prints the effective configuration as JSON (no secret values). With --out, it writes config.json
 (and prompts/<employee>.<role>.md with --prompts full) instead.
 check validates the config (schema, prompt files, extends, role references, MCP credentials) and exits 1 on any
@@ -24,6 +25,8 @@ async function main(): Promise<void> {
       "manager-role": { type: "string" },
       "live-env-names": { type: "string" },
       env: { type: "string", multiple: true },
+      "live-url": { type: "string" },
+      "token-env": { type: "string" },
       public: { type: "boolean" },
       "deny-file": { type: "string" },
     },
@@ -39,6 +42,8 @@ async function main(): Promise<void> {
     liveEnvNames,
     sandboxRuntime: v["sandbox-runtime"] as never,
     managerRole: v["manager-role"],
+    liveUrl: v["live-url"],
+    liveToken: v["token-env"] ? process.env[v["token-env"]] : undefined,
     env: Object.fromEntries((v.env ?? []).map((kv) => {
       const i = kv.indexOf("=");
       if (i < 1) throw new Error(`--env needs KEY=VALUE, got "${kv}"`);

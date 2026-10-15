@@ -21,6 +21,9 @@ export interface ScheduleRow {
   last_fired_at: Date | null;
   next_fire_at: Date;
   created_at: Date;
+  /** 'runtime' (agent-created) or 'config' (reconciled from the employee file). */
+  source: "runtime" | "config";
+  config_hash: string | null;
 }
 
 export interface MonitorRow {
@@ -293,6 +296,29 @@ export class Ledger {
       [id, input.employeeId, input.name, input.cron, input.timezone, input.roleId, input.prompt, JSON.stringify(input.deliverTo), input.createdByTask ?? null, input.nextFireAt],
     );
     return r.rows[0]!;
+  }
+
+  /**
+   * Insert or update a schedule defined in config. An unchanged definition (same hash) is a no-op, so
+   * last_fired_at / next_fire_at survive restarts. A same-name runtime row becomes a config row. Returns true if written.
+   */
+  async upsertConfigSchedule(input: Omit<CreateScheduleInput, "createdByTask"> & { enabled: boolean; hash: string }): Promise<boolean> {
+    const r = await this.db.query(
+      `INSERT INTO schedules (id, employee_id, name, cron, timezone, role_id, prompt, deliver_to, enabled, next_fire_at, source, config_hash)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'config',$11)
+       ON CONFLICT (employee_id, name) DO UPDATE SET cron = EXCLUDED.cron, timezone = EXCLUDED.timezone, role_id = EXCLUDED.role_id,
+         prompt = EXCLUDED.prompt, deliver_to = EXCLUDED.deliver_to, enabled = EXCLUDED.enabled, next_fire_at = EXCLUDED.next_fire_at,
+         source = 'config', config_hash = EXCLUDED.config_hash
+       WHERE schedules.config_hash IS DISTINCT FROM EXCLUDED.config_hash OR schedules.source <> 'config'`,
+      [`sch_${randomBase62(12)}`, input.employeeId, input.name, input.cron, input.timezone, input.roleId, input.prompt, JSON.stringify(input.deliverTo), input.enabled, input.nextFireAt, input.hash],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /** Delete config-sourced schedules of the employee whose name is not in `names`. Runtime rows are never touched. */
+  async deleteConfigSchedulesNotIn(employeeId: string, names: string[]): Promise<number> {
+    const r = await this.db.query("DELETE FROM schedules WHERE employee_id = $1 AND source = 'config' AND name <> ALL($2::text[])", [employeeId, names]);
+    return r.rowCount ?? 0;
   }
 
   async listSchedules(employeeId: string): Promise<ScheduleRow[]> {

@@ -305,6 +305,20 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       expect(new Date(schedule.next_fire_at).getTime()).toBeGreaterThan(Date.now());
     });
 
+    it("DELETE of a config schedule is 409; a runtime one is 204; the list shows source", async () => {
+      const { headers } = await taskAndToken();
+      await ledger.upsertConfigSchedule({ employeeId: "dev", name: "from-config", cron: "0 1 * * *", timezone: "UTC", roleId: "assistant", prompt: "p", deliverTo: { channel: "clickup", threadRef: "t" }, enabled: true, nextFireAt: new Date(Date.now() + 3600_000), hash: "h" });
+      const cfgRow = (await ledger.listSchedules("dev")).find((s) => s.name === "from-config")!;
+      expect(cfgRow.source).toBe("config");
+      expect((await app.inject({ method: "DELETE", url: `/schedules/${cfgRow.id}`, headers })).statusCode).toBe(409);
+      const mine = await app.inject({ method: "POST", url: "/schedules", headers, payload: { name: "del-me", cron: "0 * * * *", prompt: "x", deliverTo: { channel: "clickup", threadRef: "abc123" } } });
+      const id = (mine.json() as { schedule: { id: string } }).schedule.id;
+      expect((await app.inject({ method: "DELETE", url: `/schedules/${id}`, headers })).statusCode).toBe(204);
+      const listed = (await app.inject({ method: "GET", url: "/employees/dev/schedules" })).json() as { name: string; source: string }[];
+      expect(listed.find((s) => s.name === "from-config")?.source).toBe("config");
+      await ledger.deleteSchedule(cfgRow.id, "dev");
+    });
+
     it("a schedule without a timezone uses DEFAULT_TZ", async () => {
       const { headers } = await taskAndToken();
       const d = deps();

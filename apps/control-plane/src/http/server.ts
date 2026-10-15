@@ -285,7 +285,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (!cronCheck.ok) return reply.code(400).send({ error: cronCheck.error });
 
     const existing = await ledger.listSchedules(employee.id);
-    if (existing.filter((s) => s.enabled).length >= MAX_ENABLED_SCHEDULES) return reply.code(409).send({ error: `max ${MAX_ENABLED_SCHEDULES} enabled schedules per employee` });
+    if (existing.filter((s) => s.enabled && s.source === "runtime").length >= MAX_ENABLED_SCHEDULES) return reply.code(409).send({ error: `max ${MAX_ENABLED_SCHEDULES} enabled schedules per employee` });
     if (existing.some((s) => s.name === body.data.name)) return reply.code(409).send({ error: `schedule "${body.data.name}" already exists; use delete_schedule first` });
 
     const deliverTo: DeliverTo = body.data.deliverTo ?? source;
@@ -316,6 +316,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   app.delete<{ Params: { id: string } }>("/schedules/:id", async (req, reply) => {
     const auth = await authenticateAgent(req, reply, ledger, employees);
     if (!auth) return;
+    const row = await ledger.getSchedule(req.params.id);
+    if (row?.employee_id === auth.employee.id && row.source === "config") return reply.code(409).send({ error: "defined in config; edit the employee file" });
     const deleted = await ledger.deleteSchedule(req.params.id, auth.employee.id);
     if (!deleted) return reply.code(404).send({ error: "not found" });
     return reply.code(204).send();

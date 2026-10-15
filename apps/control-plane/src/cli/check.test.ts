@@ -53,3 +53,19 @@ describe("checkConfig credentials", () => {
     expect(await checkConfig({ dirs: await cfg("    grants: [a, b]\n", header(creds)) })).toEqual(['e: role r grants "a" and "b", which both set X']);
   });
 });
+
+describe("checkConfig schedules", () => {
+  const sched = (s: string) => `schedules:\n  s: { ${s}, deliverTo: { channel: clickup, threadRef: t } }\n`;
+  it("accepts a valid schedule", async () => {
+    expect(await checkConfig({ dirs: await cfg("", sched("cron: '0 1 * * *', timezone: America/Los_Angeles, role: r, prompt: go")) })).toEqual([]);
+  });
+  it("rejects a bad cron, a bad timezone, a too-frequent cron and an unknown role", async () => {
+    expect((await checkConfig({ dirs: await cfg("", sched("cron: 'nope', role: r, prompt: go")) }))[0]).toMatch(/schedule s:/);
+    expect((await checkConfig({ dirs: await cfg("", sched("cron: '0 1 * * *', timezone: Mars/Base, role: r, prompt: go")) }))[0]).toMatch(/schedule s:/);
+    expect((await checkConfig({ dirs: await cfg("", sched("cron: '* * * * *', role: r, prompt: go")) }))[0]).toMatch(/15 minutes/);
+    expect((await checkConfig({ dirs: await cfg("", sched("cron: '0 1 * * *', role: ghost, prompt: go")) }))[0]).toMatch(/unknown role "ghost"/);
+  });
+  it("needs exactly one of prompt / promptFile", async () => {
+    expect((await checkConfig({ dirs: await cfg("", sched("cron: '0 1 * * *', role: r")) }))[0]).toMatch(/exactly one of prompt or promptFile/);
+  });
+});

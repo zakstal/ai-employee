@@ -68,6 +68,7 @@ loaded employee ids.
 | `roles` | list | yes (at least 1) | See [Roles](#roles). |
 | `workstreams` | map | no | See [Workstreams](#workstreams). |
 | `monitors` | map | no | See [Monitors](#monitors). |
+| `schedules` | map | no | Cron entries kept in the file. See [Schedules](#schedules). |
 
 ## Roles
 
@@ -278,7 +279,26 @@ Messages that start with the bot marker (the robot emoji) are skipped.
 
 ## Schedules
 
-Schedules are **not** declared in YAML. An agent creates them at run time and they are stored in the `schedules` table:
+Schedules come from two places, both stored in the `schedules` table (`source` = `config` or `runtime`).
+
+**In the employee file** (config as code), reconciled into the table at every control-plane boot (only when `TICK_ENABLED` is true):
+
+```yaml
+schedules:
+  tailwind-nightly:
+    cron: "0 1 * * *"
+    timezone: America/Los_Angeles   # default DEFAULT_TZ
+    role: manager
+    prompt: "..."                   # or promptFile: prompts/x.md (exactly one)
+    deliverTo: { channel: clickup-chat, threadRef: <thread id> }   # clickup | clickup-chat
+    enabled: true                   # default true
+```
+
+An unchanged definition is not rewritten, so the next fire time survives restarts. Removing an entry deletes its row. A config schedule wins
+over a runtime one with the same name, and `DELETE /schedules/:id` on it is refused (409). `config check` validates cron, timezone, the 15-minute
+floor and the role; `config resolve` lists `schedulesInConfig`, and with `--live-url <url> [--token-env VAR]` also `schedulesRuntime`.
+
+**At run time**, an agent creates them:
 
 - A role with `capabilities: [schedules]` calls `create_schedule(name, cron, prompt, role?, timezone?)`. In practice you ask in chat:
   "every weekday at 07:00 summarise open PRs here".
@@ -286,7 +306,7 @@ Schedules are **not** declared in YAML. An agent creates them at run time and th
   least 15 minutes apart. `timezone` defaults to `America/Los_Angeles`. `role` defaults to the caller; another role needs to be in the caller's `canSchedule`.
 - Results are delivered to the originating ClickUp task or chat thread. The thread must be a ClickUp one (`deliverTo` must be
   `clickup` or `clickup-chat`), so a schedule cannot be created from a Slack or HTTP conversation.
-- At most 20 enabled schedules per employee.
+- At most 20 enabled runtime schedules per employee (config ones do not count).
 - List with `list_schedules` or `GET /employees/:id/schedules`; remove with `delete_schedule`.
 - The tick fires due schedules every minute, as quiet tasks.
 

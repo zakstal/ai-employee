@@ -15,6 +15,10 @@ export interface ResolveOptions {
   managerRole?: string | undefined;
   /** The deployment's non-secret settings (RUNNER_IMAGES, CLOUDRUN_JOB_PREFIX, DEFAULT_TZ ...), as in the control plane's environment. */
   env?: Record<string, string> | undefined;
+  /** Control plane base URL: also list each employee's runtime-created schedules (`schedulesRuntime`) from it. */
+  liveUrl?: string | undefined;
+  liveToken?: string | undefined;
+  fetch?: typeof fetch | undefined;
 }
 
 export interface Resolved {
@@ -66,7 +70,14 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
       prompts[`${e.id}.${role.id}`] = prompt;
       roles[role.id] = withEnv(procEnv, () => describeRole(e, role, config, registered, jobs, prompt));
     }
-    out[e.id] = { name: e.name, defaultRole: e.defaultRole, workstreams: e.workstreams, monitors: e.monitors, ...(e.credentials ? { credentials: e.credentials } : {}), ...(e.sandbox ? { sandbox: e.sandbox } : {}), roles };
+    const schedules = Object.fromEntries(Object.entries(e.schedules ?? {}).map(([n, x]) => [n, { cron: x.cron, timezone: x.timezone ?? base.DEFAULT_TZ, role: x.role, prompt: x.prompt, deliverTo: x.deliverTo, enabled: x.enabled }]));
+    out[e.id] = {
+      name: e.name, defaultRole: e.defaultRole, workstreams: e.workstreams, monitors: e.monitors,
+      ...(e.credentials ? { credentials: e.credentials } : {}), ...(e.sandbox ? { sandbox: e.sandbox } : {}),
+      ...(e.schedules ? { schedulesInConfig: schedules } : {}),
+      ...(opts.liveUrl ? { schedulesRuntime: await liveRuntimeSchedules(opts, e.id) } : {}),
+      roles,
+    };
   }
   return {
     json: sortKeys({
@@ -77,6 +88,14 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
     }) as Record<string, unknown>,
     prompts,
   };
+}
+
+/** Schedules agents created at runtime (source=runtime), read from the live control plane. */
+async function liveRuntimeSchedules(opts: ResolveOptions, employeeId: string): Promise<unknown[]> {
+  const res = await (opts.fetch ?? fetch)(`${opts.liveUrl!.replace(/\/$/, "")}/employees/${employeeId}/schedules`, { headers: opts.liveToken ? { authorization: `Bearer ${opts.liveToken}` } : {} });
+  if (!res.ok) throw new Error(`live schedules for ${employeeId}: HTTP ${res.status}`);
+  const rows = (await res.json()) as { name: string; cron: string; timezone: string; role_id: string; enabled: boolean; next_fire_at: string; source?: string }[];
+  return rows.filter((r) => (r.source ?? "runtime") === "runtime").map((r) => ({ name: r.name, cron: r.cron, timezone: r.timezone, role: r.role_id, enabled: r.enabled, nextFireAt: r.next_fire_at }));
 }
 
 function describeRole(employee: Employee, role: Role, config: Config, registered: string[], jobs: CloudRunJobRuntime, prompt: string) {
