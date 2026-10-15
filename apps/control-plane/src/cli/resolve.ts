@@ -101,7 +101,7 @@ function describeRole(role: Role, config: Config, registered: string[], jobs: Cl
     capabilities: role.capabilities,
     canSchedule: role.canSchedule,
     canSpawn: role.canSpawn,
-    systemPrompt: { bytes: Buffer.byteLength(prompt), sha256: createHash("sha256").update(prompt).digest("hex"), file: role.systemPromptFile ?? null },
+    systemPrompt: { bytes: Buffer.byteLength(prompt), sha256: createHash("sha256").update(prompt).digest("hex"), file: role.systemPromptFile ?? null, ...(role.systemPromptFiles ? { files: role.systemPromptFiles } : {}) },
   };
 }
 

@@ -1,0 +1,13 @@
+roles:
+  - id: _base
+    allowedTools: [Read, Grep]
+    credentials: [github]
+    maxTurns: 100
+    systemPromptFiles: [prompts/base.md]
+  - id: developer
+    extends: _base
+    +allowedTools: [Edit]
+    mcpServers:
+      clickup: { command: clickup-mcp }
+workstreams:
+  sdlc: { entryRole: developer }
