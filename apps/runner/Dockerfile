@@ -29,6 +29,9 @@ COPY apps/runner/pg-scratch.sh /usr/local/bin/pg-scratch
 RUN chmod +x /usr/local/bin/pg-scratch
 COPY apps/runner/test/toolbelt-smoke.sh /app/apps/runner/test/toolbelt-smoke.sh
 RUN ln -s /app/apps/runner/dist/tools-mcp.js /usr/local/bin/ai-employee-tools && chmod +x /app/apps/runner/dist/tools-mcp.js
+RUN ln -s /app/apps/runner/dist/credential.js /usr/local/bin/ai-employee-credential && chmod +x /app/apps/runner/dist/credential.js
+COPY apps/runner/gh-refresh.sh /usr/local/bin/gh
+RUN chmod 755 /usr/local/bin/gh
 USER 1000:1000
 WORKDIR /workspace
 ENV DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1

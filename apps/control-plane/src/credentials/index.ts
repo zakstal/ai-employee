@@ -56,3 +56,11 @@ export function grantPurposes(employee: Employee | undefined, role: Role): Set<P
   }
   return out;
 }
+
+/** The role's grant that a running sandbox can refresh (a minted token that outlives a long run), if any. */
+export function refreshableGrant(employee: Employee, role: Role): string | undefined {
+  return roleGrants(role).find((g) => {
+    const spec = employee.credentials?.[g];
+    return spec && providerFor(spec).refreshable;
+  });
+}

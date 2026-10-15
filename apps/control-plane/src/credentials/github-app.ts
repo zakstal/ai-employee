@@ -20,6 +20,7 @@ export function appJwt(appId: string, pem: string, now: Date): string {
  */
 export const githubAppProvider: CredentialProvider<Spec> = {
   kind: "minted",
+  refreshable: true,
   // permission values are already limited to read|write by the schema
   validate: (name, spec) => (spec.env.length ? [] : [`credential "${name}": env must name at least one variable`]),
   envNames: (spec) => [...spec.env, ...(spec.gitAuthor ? ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"] : [])],

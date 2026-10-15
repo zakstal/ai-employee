@@ -23,6 +23,8 @@ export interface ResolvedCredential {
 
 export interface CredentialProvider<S extends CredentialSpec = CredentialSpec> {
   readonly kind: S["kind"];
+  /** True if a running sandbox may ask for a fresh value (POST /credentials/:grant/refresh), e.g. a token that expires mid-run. */
+  readonly refreshable?: boolean;
   /** Static, no network. Problems for `config check`. */
   validate(name: string, spec: S): string[];
   /** Env var NAMES this login sets. No network, no secrets: used for MCP placeholder checks, `config resolve`, conflict checks. */

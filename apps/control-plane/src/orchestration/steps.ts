@@ -3,7 +3,7 @@ import type { Config } from "../config.js";
 import { deps } from "./deps.js";
 import { requestWake, shouldWake } from "../manager/tick.js";
 import { BOT_MARKER } from "../clickup/chat.js";
-import { grantEnvNames, grantPurposes, resolveGrantEnv } from "../credentials/index.js";
+import { grantEnvNames, grantPurposes, refreshableGrant, resolveGrantEnv } from "../credentials/index.js";
 
 /**
  * Steps: plain async functions with side effects. Engine-free. Each must be
@@ -32,6 +32,9 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
     MCP_CONFIG: "", // filled below once credentials are known
     EVENT_SINK_URL: `${config.PUBLIC_BASE_URL}/runs/${taskId}/events`,
     RUN_TOKEN: runToken,
+    CONTROL_PLANE_URL: config.PUBLIC_BASE_URL,
+    // Names the grant the runner may re-fetch mid-run (git/gh helpers); absent when nothing refreshable is granted.
+    ...(refreshableGrant(employee, role) ? { GH_TOKEN_REFRESH: refreshableGrant(employee, role)! } : {}),
     ...(role.model ? { MODEL: role.model } : {}),
     ...(role.repos.length ? { REPOS: JSON.stringify(role.repos) } : {}),
     ...(conversationId ? { WORKSPACE_KEY: `conv-${conversationId}` } : {}),

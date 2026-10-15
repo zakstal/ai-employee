@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { resolveRole, type Employee, type Orchestrator, type Role, type RunnerEvent } from "@ai-employee/core";
+import { resolveRole, roleGrants, type Employee, type Orchestrator, type Role, type RunnerEvent } from "@ai-employee/core";
 import type { Config } from "../config.js";
 import { randomBase62, type DeliverTo, type Ledger, type TaskRow } from "../db/ledger.js";
 import { verifySlackSignature } from "../slack/verify.js";
@@ -11,6 +11,8 @@ import { clickUpTrigger, type ClickUpWebhook } from "../clickup/webhook.js";
 import { chatTrigger, BOT_MARKER } from "../clickup/chat.js";
 import type { ClickUpClient } from "../clickup/client.js";
 import { validateCron } from "../schedules/cron.js";
+import { providerFor } from "../credentials/index.js";
+import { deps as workflowDeps } from "../orchestration/deps.js";
 import { RUN_HTML } from "./run.html.js";
 import { STATUS_HTML } from "./status.html.js";
 
@@ -59,6 +61,7 @@ const CreateScheduleBody = z.object({
 const MAX_ENABLED_SCHEDULES = 20;
 const MAX_SPAWN_DEPTH = 2;
 const MAX_ACTIVE_CHILDREN = 4;
+const MAX_CREDENTIAL_REFRESHES = 60; // per run; a refresh returns a live token
 const ASK_LONG_POLL_MS = 25_000;
 
 const CreateAgentBody = z
@@ -351,6 +354,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   app.get<{ Params: { id: string } }>("/employees/:id/schedules", async (req, reply) => {
     if (!employees.has(req.params.id)) return reply.code(404).send({ error: "unknown employee" });
     return ledger.listSchedules(req.params.id);
+  });
+
+  // ---- credential refresh: a long run asks for a fresh token of a grant it holds (auth: Bearer <run token> + X-Task-Id)
+  // ponytail: in-memory count per run, lost on restart; persist if the cap ever has to survive one.
+  const refreshes = new Map<string, number>();
+  app.post("/credentials/:grant/refresh", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth) return;
+    const { grant } = req.params as { grant: string };
+    if (!roleGrants(auth.role).includes(grant)) return reply.code(403).send({ error: `role ${auth.role.id} has no grant "${grant}"` });
+    const spec = auth.employee.credentials?.[grant];
+    const provider = spec ? providerFor(spec) : undefined;
+    if (!spec || !provider?.refreshable) return reply.code(404).send({ error: `credential "${grant}" cannot be refreshed` });
+    const n = (refreshes.get(auth.taskId) ?? 0) + 1;
+    if (n > MAX_CREDENTIAL_REFRESHES) return reply.code(429).send({ error: "too many refreshes for this run" });
+    refreshes.set(auth.taskId, n);
+    const { config, secrets } = workflowDeps();
+    try {
+      const r = await provider.resolve(grant, spec, { employee: auth.employee, role: auth.role, taskId: auth.taskId, config, secrets, fetch, now: () => new Date() });
+      return { env: r.env, expiresAt: r.expiresAt?.toISOString() ?? null };
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message });
+    }
   });
 
   // ---- child agents: spawn a subagent as its own task (auth: Bearer <run token> + X-Task-Id)

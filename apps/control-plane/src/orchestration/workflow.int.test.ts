@@ -7,7 +7,8 @@ import { DBOS } from "@dbos-inc/dbos-sdk";
 import * as monitors from "../monitors/tick.js";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { generateKeyPairSync } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { LocalProcessRuntime } from "@ai-employee/adapters";
 import type { Employee, RunSpec } from "@ai-employee/core";
 import { loadConfig } from "../config.js";
@@ -26,7 +27,10 @@ const employee: Employee = {
   id: "dev",
   name: "Dev Bot",
   defaultRole: "assistant",
-  credentials: { vault: { kind: "secret", env: { SENTINEL_ENV: { secret: "sentinel" } } } },
+  credentials: {
+    vault: { kind: "secret", env: { SENTINEL_ENV: { secret: "sentinel" } } },
+    gh: { kind: "minted", provider: "github-app", appId: "1", installationId: "2", privateKey: { secret: "appkey" }, permissions: { contents: "read" }, env: ["GH_TOKEN", "NPM_GITHUB_TOKEN"] },
+  },
   workstreams: { sdlc: { entryRole: "assistant", description: "test workstream" } },
   monitors: {
     "support-watch": { collector: "clickup-channels", everyMin: 5, role: "ops", description: "test watcher", config: { channels: [{ id: "sup-1", name: "us-support" }] } },
@@ -40,6 +44,11 @@ const employee: Employee = {
     {
       id: "vault", description: "", systemPrompt: "be brief", allowedTools: ["Read"], disallowedTools: [], mcpServers: {},
       maxTurns: 5, runtime: "k8s", cpu: 1, memoryMb: 256, timeoutSec: 20, credentials: [], grants: ["vault"], repos: [],
+      capabilities: [], canSchedule: [], canSpawn: [],
+    },
+    {
+      id: "ghrole", description: "", systemPrompt: "be brief", allowedTools: ["Read"], disallowedTools: [], mcpServers: {},
+      maxTurns: 5, runtime: "k8s", cpu: 1, memoryMb: 256, timeoutSec: 20, credentials: [], grants: ["gh"], repos: [],
       capabilities: [], canSchedule: [], canSpawn: [],
     },
     {
@@ -312,6 +321,31 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       expect(spec.env.GIT_AUTHOR_NAME).toBe("Dev Bot");
       const tools = (JSON.parse(spec.env.MCP_CONFIG!) as { mcpServers: { ai_employee: { env: Record<string, string> } } }).mcpServers.ai_employee;
       expect(tools.env.DEFAULT_TZ).toBe(deps().config.DEFAULT_TZ);
+    });
+
+    it("refresh route: 401 bad run token, 403 for a grant the role lacks, 200 with a fresh token for one it has", async () => {
+      process.env.SECRET_APPKEY = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey;
+      const realFetch = globalThis.fetch;
+      vi.stubGlobal("fetch", async (url: string, init?: RequestInit) =>
+        String(url).startsWith("https://api.github.com/") ? new Response(JSON.stringify({ token: "ghs_fresh", expires_at: "2030-01-01T00:00:00Z" }), { status: 201 }) : realFetch(url, init),
+      );
+      try {
+        const ok = await taskAndToken("ghrole");
+        const good = await app.inject({ method: "POST", url: "/credentials/gh/refresh", headers: ok.headers });
+        expect(good.statusCode).toBe(200);
+        expect(good.json()).toEqual({ env: { GH_TOKEN: "ghs_fresh", NPM_GITHUB_TOKEN: "ghs_fresh" }, expiresAt: "2030-01-01T00:00:00.000Z" });
+        expect((await app.inject({ method: "POST", url: "/credentials/vault/refresh", headers: ok.headers })).statusCode).toBe(403);
+        const vault = await taskAndToken("vault");
+        expect((await app.inject({ method: "POST", url: "/credentials/vault/refresh", headers: vault.headers })).statusCode).toBe(404); // granted but a static secret
+        expect((await app.inject({ method: "POST", url: "/credentials/gh/refresh", headers: { ...ok.headers, authorization: "Bearer nope" } })).statusCode).toBe(401);
+        const spec = await buildRunSpec(ok.taskId, { employeeId: "dev", roleId: "ghrole", prompt: "x", source: { channel: "http" } });
+        expect(spec.env).toMatchObject({ GH_TOKEN_REFRESH: "gh", CONTROL_PLANE_URL: deps().config.PUBLIC_BASE_URL });
+        expect(JSON.stringify(spec.env)).not.toContain("ghs_fresh");
+        await waitFor(ok.taskId, ["done", "failed"]);
+      } finally {
+        vi.unstubAllGlobals();
+        delete process.env.SECRET_APPKEY;
+      }
     });
 
     it("rejects a cron firing more often than every 15 minutes (400)", async () => {

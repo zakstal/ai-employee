@@ -26,6 +26,12 @@ describe("bootstrapTools", () => {
     const clone = run.mock.calls.find((c) => (c[1] as string[])[0] === "clone")!;
     expect(clone[1]).toEqual(["clone", "--depth", "50", "--branch", "main", "https://github.com/o/r.git", "/ws/r"]);
   });
+  it("uses the refreshing credential helper when GH_TOKEN_REFRESH is set", () => {
+    const run = vi.fn().mockReturnValue({ status: 0, stderr: "" });
+    const notes = bootstrapTools({ GH_TOKEN: "t", GH_TOKEN_REFRESH: "github" }, run as never);
+    expect(notes).toContain("git: credential helper → control plane (refreshing)");
+    expect(run.mock.calls[0]![1]).toEqual(["config", "--global", "credential.helper", "!ai-employee-credential git"]);
+  });
   it("logs into azure via the token broker when IDENTITY_ENDPOINT is set", () => {
     const run = vi.fn().mockReturnValue({ status: 0, stderr: "" });
     const notes = bootstrapTools({ IDENTITY_ENDPOINT: "http://azbroker:8081/token", IDENTITY_HEADER: "s", AZURE_SUBSCRIPTION_ID: "sub" }, run as never);
