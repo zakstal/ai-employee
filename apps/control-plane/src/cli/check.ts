@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { CredentialSpec } from "@ai-employee/core";
 import { isBuiltinGrant, providerFor } from "../credentials/index.js";
+import { loadPlugins, monitorProblems } from "../collectors/index.js";
 import { scheduleProblem } from "../schedules/reconcile.js";
 import { resolveEffectiveConfig, type ResolveOptions } from "./resolve.js";
 
@@ -10,7 +11,7 @@ export interface CheckOptions extends ResolveOptions {
 }
 
 type Role = { credentials: string[]; canSpawn: string[]; canSchedule: string[]; mcpServers: Record<string, unknown>; mcpServersResolvable: string[] };
-type Emp = { credentials?: Record<string, CredentialSpec>; defaultRole: string; roles: Record<string, Role>; workstreams: Record<string, { entryRole: string }>; monitors: Record<string, { role: string }>; schedulesInConfig?: Record<string, { cron: string; timezone: string; role: string }>; backlogs?: Record<string, { credential: string; dispatch: { role: string } }> };
+type Emp = { credentials?: Record<string, CredentialSpec>; defaultRole: string; roles: Record<string, Role>; workstreams: Record<string, { entryRole: string }>; monitors: Record<string, { role: string; collector: string; config: unknown }>; schedulesInConfig?: Record<string, { cron: string; timezone: string; role: string }>; backlogs?: Record<string, { credential: string; dispatch: { role: string } }> };
 
 /** Every problem found, empty when the config is sound. Schema, prompt files and extends errors surface from the loader as one problem. */
 export async function checkConfig(opts: CheckOptions): Promise<string[]> {
@@ -20,8 +21,9 @@ export async function checkConfig(opts: CheckOptions): Promise<string[]> {
   } catch (e) {
     return [e instanceof Error ? e.message : String(e)];
   }
-  const problems: string[] = [];
+  const problems: string[] = (await loadPlugins(opts.dirs)).errors;
   const employees = resolved.json.employees as Record<string, Emp>;
+  problems.push(...monitorProblems(Object.entries(employees).map(([id, e]) => ({ id, monitors: e.monitors }))));
   const managerRole = (resolved.json.env as { managerRole: string }).managerRole;
   for (const [id, e] of Object.entries(employees)) {
     const has = (r: string) => r in e.roles;
