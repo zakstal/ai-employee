@@ -6,6 +6,7 @@ import { Ledger } from "./db/ledger.js";
 import { migrate } from "./db/migrate.js";
 import { closePool, getPool } from "./db/pool.js";
 import { buildServer } from "./http/server.js";
+import { EnvSecretStore, GcpSecretStore } from "./credentials/index.js";
 import { setWorkflowDeps } from "./orchestration/deps.js";
 import { DbosOrchestrator } from "./orchestration/dbos-orchestrator.js";
 import { registerDigestWorkflow } from "./orchestration/digest-workflow.js";
@@ -41,7 +42,9 @@ async function main(): Promise<void> {
   const slack = new HttpSlackClient(config.SLACK_BOT_TOKEN);
   const clickup = new HttpClickUpClient(config.CLICKUP_API_TOKEN);
   const orchestrator = new DbosOrchestrator(ledger);
-  setWorkflowDeps({ config, ledger, employees, runtimes, slack, clickup, orchestrator });
+  if (config.SECRET_STORE === "gcp" && !config.GCP_PROJECT) throw new Error("SECRET_STORE=gcp requires GCP_PROJECT");
+  const secrets = config.SECRET_STORE === "gcp" ? new GcpSecretStore(config.GCP_PROJECT) : new EnvSecretStore();
+  setWorkflowDeps({ config, ledger, employees, runtimes, slack, clickup, secrets, orchestrator });
 
   DBOS.setConfig({ name: "ai-employee", systemDatabaseUrl: config.DBOS_SYSTEM_DATABASE_URL });
   registerDigestWorkflow(config);

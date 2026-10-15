@@ -47,6 +47,8 @@ const Env = z.object({
   WARM_RUNNER_URL: z.string().default("http://runner:8080"),
   RUNNER_TOKEN: z.string().default(""),
   GCP_PROJECT: z.string().default(""),
+  /** Where `secret:` credential references are read: Secret Manager in GCP_PROJECT, or SECRET_<NAME> env vars. */
+  SECRET_STORE: z.enum(["gcp", "env"]).default("env"),
   GCP_REGION: z.string().default("us-central1"),
   /** Cloud Run Job per runner image: `${prefix}-runner`, `${prefix}-runner-ops`. */
   CLOUDRUN_JOB_PREFIX: z.string().default("ai-employee"),

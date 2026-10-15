@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { CredentialSpecSchema, EmployeeSchema, roleGrants, type Employee, type Role } from "@ai-employee/core";
 import { loadConfig } from "../config.js";
 import { environmentFooter } from "../orchestration/steps.js";
-import { grantPurposes, legacyEnv, resolveGrantEnv, type CredentialContext } from "./index.js";
+import { grantEnvNames, grantPurposes, legacyEnv, resolveGrantEnv, type CredentialContext } from "./index.js";
 
 const config = loadConfig({ DATABASE_URL: "x", DBOS_SYSTEM_DATABASE_URL: "x", GH_TOKEN: "ghp_x" } as NodeJS.ProcessEnv);
 const role = (r: Partial<Role>) => ({ id: "r", allowedTools: [], credentials: [], repos: [], capabilities: [], ...r }) as unknown as Role;
-const ctx = (employee?: Employee): CredentialContext => ({ employee: employee ?? ({ id: "e" } as Employee), role: role({}), taskId: "t", config, secrets: { get: async () => undefined }, fetch, now: () => new Date() });
+const ctx = (employee?: Employee, secrets: Record<string, string> = {}): CredentialContext => ({ employee: employee ?? ({ id: "e" } as Employee), role: role({}), taskId: "t", config, secrets: { get: async (n) => secrets[n] }, fetch, now: () => new Date() });
 
 describe("legacy grants", () => {
   it("github sets GH_TOKEN and NPM_GITHUB_TOKEN", () => {
@@ -59,5 +59,22 @@ describe("purpose", () => {
     expect(f).toContain("ALREADY LOGGED IN");
     expect(f).toContain("mcp__clickup__*");
     expect(f).not.toContain("gh pr create");
+  });
+});
+
+describe("secret provider", () => {
+  const emp = (env: object) => EmployeeSchema.parse({ id: "e", name: "E", defaultRole: "r", roles: [{ id: "r" }], credentials: { pm: { kind: "secret", env } } });
+  it("passes inline values through and reads references from the store", async () => {
+    const e = emp({ TOKEN: { secret: "t" }, TEAM: { value: "42" } });
+    expect(await resolveGrantEnv(ctx(e, { t: "abc" }), ["pm"])).toEqual({ TOKEN: "abc", TEAM: "42" });
+    expect(grantEnvNames(e, role({ grants: ["pm"] }), config)).toEqual(["TEAM", "TOKEN"]);
+  });
+  it("a secret with no version throws unless optional", async () => {
+    await expect(resolveGrantEnv(ctx(emp({ TOKEN: { secret: "t" } })), ["pm"])).rejects.toThrow('secret "t" has no value');
+    expect(await resolveGrantEnv(ctx(emp({ TOKEN: { secret: "t", optional: true } })), ["pm"])).toEqual({});
+  });
+  it("an employee login of a built-in name wins over the built-in", async () => {
+    const e = EmployeeSchema.parse({ id: "e", name: "E", defaultRole: "r", roles: [{ id: "r" }], credentials: { github: { kind: "secret", env: { GH_TOKEN: { value: "mine" } } } } });
+    expect(await resolveGrantEnv(ctx(e), ["github"])).toEqual({ GH_TOKEN: "mine" });
   });
 });

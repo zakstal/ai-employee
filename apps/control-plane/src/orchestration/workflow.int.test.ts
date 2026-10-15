@@ -17,6 +17,7 @@ import { NoopSlackClient } from "../slack/client.js";
 import { NoopClickUpClient } from "../clickup/client.js";
 import { fireDueSchedules } from "../schedules/tick.js";
 import { resetTestDatabases, TEST_DB_URL, TEST_DBOS_URL } from "../test-support.js";
+import { EnvSecretStore } from "../credentials/index.js";
 import { deps, setWorkflowDeps } from "./deps.js";
 import { buildRunSpec } from "./steps.js";
 import { DbosOrchestrator } from "./dbos-orchestrator.js";
@@ -85,7 +86,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
     const addr = app.server.address();
     baseUrl = typeof addr === "object" && addr ? `http://127.0.0.1:${addr.port}` : "";
     // Steps read PUBLIC_BASE_URL from deps → point it at the ephemeral port.
-    setWorkflowDeps({ config: { ...config, PUBLIC_BASE_URL: baseUrl }, ledger, employees, runtimes, slack, clickup, orchestrator });
+    setWorkflowDeps({ config: { ...config, PUBLIC_BASE_URL: baseUrl }, ledger, employees, runtimes, slack, clickup, secrets: new EnvSecretStore(), orchestrator });
 
     DBOS.setConfig({ name: "ai-employee-test", systemDatabaseUrl: TEST_DBOS_URL });
     await DBOS.launch();

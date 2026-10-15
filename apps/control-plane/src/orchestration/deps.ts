@@ -3,6 +3,7 @@ import type { Ledger } from "../db/ledger.js";
 import type { Config } from "../config.js";
 import type { SlackClient } from "../slack/client.js";
 import type { ClickUpClient } from "../clickup/client.js";
+import type { SecretStore } from "../credentials/types.js";
 
 /**
  * Dependencies for workflow steps. Set once at boot. Steps read from here so
@@ -15,6 +16,8 @@ export interface WorkflowDeps {
   runtimes: Record<string, SandboxRuntime>;
   slack: SlackClient;
   clickup: ClickUpClient;
+  /** Where per-employee `secret:` credential references are read. */
+  secrets: SecretStore;
   /** Used by the cron tick (fireDueSchedules) to start tasks. */
   orchestrator: Orchestrator;
 }
