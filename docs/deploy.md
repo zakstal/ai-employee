@@ -106,13 +106,14 @@ Variables you may set (`variables.tf`):
 
 | variable | default | meaning |
 |---|---|---|
-| `project_id`, `region`, `name` | `my-gcp-project`, `us-central1`, `ai-employee` | `name` prefixes every resource and is the `CLOUDRUN_JOB_PREFIX` |
+| `project_id`, `region`, `name` | required, `us-central1`, `ai-employee` | `name` prefixes every resource and is the `CLOUDRUN_JOB_PREFIX` |
 | `db_tier`, `db_password` | `db-f1-micro`, required | Cloud SQL size and the `ai` user's password |
 | `control_plane_image`, `runner_image`, `runner_ops_image` | required | full image URLs |
 | `min_instances` | `0` | **0 parks the service.** Set `1` for a live control plane; `max_instance_count` is fixed at 1 |
 | `public_base_url` | `""` | the `service_url` output, set on the second apply |
 | `env` | `{}` | extra plain env vars; overrides computed ones |
 | `extra_runner_images` | `{}` | more Cloud Run jobs from derived images, see [below](#derived-runner-images-and-bootstrapd) |
+| `secret_shells` | `[]` | Secret Manager secrets created empty; add values with `gcloud secrets versions add` so they never enter state. `infra/gcp-vm` takes the same variable to grant the VM access |
 
 After the first apply: `terraform output -raw service_url`, set `PUBLIC_BASE_URL_CLOUD` to it in `.env`, and run `apply.sh` again so runners know where to send events.
 Migrations run when the service boots; there is no separate step.

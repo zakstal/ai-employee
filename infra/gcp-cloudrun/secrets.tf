@@ -41,6 +41,22 @@ resource "google_secret_manager_secret_version" "simple" {
   secret_data = local.simple_secrets[each.key]
 }
 
+# --- Secret shells without any value --------------------------------------
+# Created empty (no version resource), so values added later with `gcloud secrets versions add` never
+# enter variables or state. Each gets the same replication as the secrets above.
+resource "google_secret_manager_secret" "shell" {
+  for_each = var.secret_shells
+
+  project   = var.project_id
+  secret_id = each.key
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
 # --- Database URLs, built from the Cloud SQL connection name --------------
 # `localhost` is a placeholder so the string is a valid WHATWG URL (DBOS runs `new URL()` on it);
 # the pg driver honours `?host=/cloudsql/...` and ignores the placeholder.

@@ -10,6 +10,8 @@ export const RoleSchema = z.object({
   systemPrompt: z.string().default(""),
   /** Path (relative to the roles dir) of a markdown file whose contents become systemPrompt. */
   systemPromptFile: z.string().optional(),
+  /** Several prompt files, read in order and joined with a blank line (replaces systemPromptFile). */
+  systemPromptFiles: z.array(z.string()).optional(),
   /** Harness tool allowlist, e.g. ["Read","Grep","Bash(git *)"]. */
   allowedTools: z.array(z.string()).default([]),
   disallowedTools: z.array(z.string()).default([]),
@@ -63,6 +65,8 @@ export const EmployeeSchema = z.object({
   /** Named entry points for POST /agents { workstream }, resolving to a starting role. */
   workstreams: z.record(z.object({ entryRole: z.string().min(1), description: z.string().optional() })).default({}),
   monitors: z.record(MonitorSchema).default({}),
+  /** Values for `{{NAME}}` in prompts. Built in: BOT_NAME, EMPLOYEE_ID, PR_SIGNATURE. */
+  vars: z.record(z.string()).optional(),
 });
 export type Employee = z.infer<typeof EmployeeSchema>;
 
