@@ -11,7 +11,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
  * `listTools` works even before those are wired up.
  */
 
-const DEFAULT_TIMEZONE = "America/Los_Angeles";
+const DEFAULT_TIMEZONE = process.env.DEFAULT_TZ ?? "America/Los_Angeles";
 const envPollMs = Number(process.env.AI_EMPLOYEE_POLL_MS);
 const AGENT_POLL_MS = envPollMs || 3000;
 const ANSWER_POLL_MS = envPollMs || 5000;

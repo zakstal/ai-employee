@@ -18,6 +18,7 @@ import { NoopClickUpClient } from "../clickup/client.js";
 import { fireDueSchedules } from "../schedules/tick.js";
 import { resetTestDatabases, TEST_DB_URL, TEST_DBOS_URL } from "../test-support.js";
 import { deps, setWorkflowDeps } from "./deps.js";
+import { buildRunSpec } from "./steps.js";
 import { DbosOrchestrator } from "./dbos-orchestrator.js";
 
 const employee: Employee = {
@@ -271,6 +272,24 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       expect(schedule.id).toMatch(/^sch_/);
       expect(schedule.role_id).toBe("assistant");
       expect(new Date(schedule.next_fire_at).getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it("a schedule without a timezone uses DEFAULT_TZ", async () => {
+      const { headers } = await taskAndToken();
+      const d = deps();
+      const paris = buildServer({ config: { ...d.config, DEFAULT_TZ: "Europe/Paris" }, ledger, orchestrator: d.orchestrator, employees: d.employees, slack, clickup });
+      const res = await paris.inject({ method: "POST", url: "/schedules", headers, payload: { name: "tz-default", cron: "0 * * * *", prompt: "x", deliverTo: { channel: "clickup", threadRef: "abc123" } } });
+      await paris.close();
+      expect(res.statusCode).toBe(201);
+      expect((res.json() as { schedule: { timezone: string } }).schedule.timezone).toBe("Europe/Paris");
+    });
+
+    it("run env carries GIT_AUTHOR_NAME (employee name) and DEFAULT_TZ for the tools server", async () => {
+      const { taskId } = await taskAndToken();
+      const spec = await buildRunSpec(taskId, { employeeId: "dev", roleId: "assistant", prompt: "x", source: { channel: "http" } });
+      expect(spec.env.GIT_AUTHOR_NAME).toBe("Dev Bot");
+      const tools = (JSON.parse(spec.env.MCP_CONFIG!) as { mcpServers: { ai_employee: { env: Record<string, string> } } }).mcpServers.ai_employee;
+      expect(tools.env.DEFAULT_TZ).toBe(deps().config.DEFAULT_TZ);
     });
 
     it("rejects a cron firing more often than every 15 minutes (400)", async () => {

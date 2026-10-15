@@ -80,5 +80,5 @@ function tzOffsetHours(tz: string, at: Date): number {
 }
 
 export function registerDigestWorkflow(config: Config): void {
-  DBOS.registerScheduled(digestWorkflow, { crontab: crontabToUtc(config.DIGEST_CRON, config.DIGEST_TZ) });
+  DBOS.registerScheduled(digestWorkflow, { crontab: crontabToUtc(config.DIGEST_CRON, config.DIGEST_TZ || config.DEFAULT_TZ) });
 }

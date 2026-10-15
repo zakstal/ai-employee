@@ -56,9 +56,12 @@ const Env = z.object({
   MANAGER_HEARTBEAT_MIN: z.coerce.number().int().nonnegative().default(60),
   /** false on any secondary control plane sharing the DB (the parked Cloud Run one): only one tick may run. */
   TICK_ENABLED: z.enum(["true", "false"]).default("true").transform((v) => v === "true"),
-  /** Crontab (5-field, local to DIGEST_TZ) for the daily digest. */
+  /** Crontab (5-field, local to DIGEST_TZ, else DEFAULT_TZ) for the daily digest. */
   DIGEST_CRON: z.string().default("0 8 * * *"),
-  DIGEST_TZ: z.string().default("America/Los_Angeles"),
+  /** IANA zone for the digest. Empty = DEFAULT_TZ. */
+  DIGEST_TZ: z.string().default(""),
+  /** IANA zone for schedules created without one, and the digest unless DIGEST_TZ is set. */
+  DEFAULT_TZ: z.string().default("America/Los_Angeles"),
 });
 
 export type Config = z.infer<typeof Env>;

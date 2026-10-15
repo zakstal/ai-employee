@@ -22,6 +22,7 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
   const sessionId = conversationId ? await ledger.getConversationSession(conversationId) : null;
   const env: Record<string, string> = {
     TASK_ID: taskId,
+    GIT_AUTHOR_NAME: employee.name,
     TASK_PROMPT: await enrichPrompt(input, sessionId !== null),
     SYSTEM_PROMPT: `${role.systemPrompt.trimEnd()}\n\n${environmentFooter(role)}`,
     ALLOWED_TOOLS: role.allowedTools.join(","),
@@ -41,7 +42,7 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
   if (role.capabilities.some((c) => c === "schedules" || c === "agents" || c === "monitors" || c === "backlog")) {
     builtinServers.ai_employee = {
       command: "ai-employee-tools",
-      env: { CONTROL_PLANE_URL: config.PUBLIC_BASE_URL, RUN_TOKEN: runToken, TASK_ID: taskId },
+      env: { CONTROL_PLANE_URL: config.PUBLIC_BASE_URL, RUN_TOKEN: runToken, TASK_ID: taskId, DEFAULT_TZ: config.DEFAULT_TZ },
     };
     if (!role.allowedTools.includes("mcp__ai_employee__*")) env.ALLOWED_TOOLS = [...role.allowedTools, "mcp__ai_employee__*"].join(",");
   }

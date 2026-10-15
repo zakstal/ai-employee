@@ -277,7 +277,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     if (!employee.roles.some((r) => r.id === targetRoleId)) return reply.code(400).send({ error: `employee ${employee.id} has no role ${targetRoleId}` });
 
-    const timezone = body.data.timezone ?? "America/Los_Angeles";
+    const timezone = body.data.timezone ?? config.DEFAULT_TZ;
     const cronCheck = validateCron(body.data.cron, timezone);
     if (!cronCheck.ok) return reply.code(400).send({ error: cronCheck.error });
 

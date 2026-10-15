@@ -69,7 +69,7 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
     json: sortKeys({
       schemaVersion: 1,
       source: { gitSha: gitSha(), dirs: [opts.dir] },
-      env: { managerRole: base.MANAGER_ROLE, sandboxRuntime: config.SANDBOX_RUNTIME, cloudRunJobPrefix: config.CLOUDRUN_JOB_PREFIX, defaultEmployeeId: config.DEFAULT_EMPLOYEE_ID, digestTz: config.DIGEST_TZ },
+      env: { managerRole: base.MANAGER_ROLE, sandboxRuntime: config.SANDBOX_RUNTIME, cloudRunJobPrefix: config.CLOUDRUN_JOB_PREFIX, defaultEmployeeId: config.DEFAULT_EMPLOYEE_ID, defaultTz: base.DEFAULT_TZ, digestTz: base.DIGEST_TZ || base.DEFAULT_TZ },
       employees: out,
     }) as Record<string, unknown>,
     prompts,
