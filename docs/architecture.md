@@ -27,7 +27,15 @@ dedup key at two layers: `tasks` row insert (`ON CONFLICT DO NOTHING`) and the D
 
 ## Security posture (milestone 1)
 
-- Runner runs as non-root with `--permission-mode bypassPermissions` inside a Job with `activeDeadlineSeconds`.
+- Runner runs as non-root in default permission mode with `--permission-prompts none`, so anything outside the role's `allowedTools` is denied; Kubernetes Jobs also get `activeDeadlineSeconds`.
 - Per-run bearer token (sha256 stored) for the event sink, TTL = role timeout + 10 min.
 - Slack signatures verified over raw bytes, 5-minute replay window.
 - Not yet: egress NetworkPolicy, gVisor RuntimeClass, minted short-lived provider tokens (currently static env). Tracked in backlog.
+
+## Rules that keep the adapters cheap to swap
+
+- The workflow body (`apps/control-plane/src/orchestration/workflow.ts`) only sequences steps. No clock, no IO, no env.
+  It follows Temporal's determinism rules even though DBOS does not require them.
+- The runner pushes events; adapters never tail logs.
+- Credentials are injected per run via env. Workload Identity is a Kubernetes-only shortcut, not a dependency.
+- Sub-agents are child tasks through the control plane, not Claude Code in-process subagents.

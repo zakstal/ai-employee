@@ -100,12 +100,9 @@ Artifact Registry repo -- this stack never owns those.
   (`postgres://u:p@cloudsql:5432/db`) before writing `.env`. Nothing in
   Secret Manager itself changes.
 - **Runner in server mode**: `RUNNER_MODE=server` + `RUNNER_PORT=8080` +
-  `RUNNER_TOKEN` on the `runner` container, per the runner's documented
-  entrypoint switch (`apps/runner/dist/index.js`). It is not currently
-  wired for that mode as of this writing (`apps/runner/src/index.ts` only
-  implements the one-shot Cloud Run Job path) -- that's an application-side
-  gap, not something this infra stack can fix; verify/implement server mode
-  in the runner before pointing traffic at this VM.
+  `RUNNER_TOKEN` on the `runner` container switch the runner image's entrypoint
+  (`apps/runner/dist/index.js`) into the warm HTTP server implemented in
+  `apps/runner/src/server.ts`.
 - **`sslip_host` computed once in `main.tf`**: both `outputs.tf` and
   `startup.sh.tftpl` read the same `local.sslip_host`, so the hostname in
   Caddy's config and the one you register with ClickUp can never drift
