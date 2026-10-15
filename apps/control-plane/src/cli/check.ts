@@ -25,6 +25,7 @@ export async function checkConfig(opts: CheckOptions): Promise<string[]> {
   for (const [id, e] of Object.entries(employees)) {
     const has = (r: string) => r in e.roles;
     const ref = (where: string, r: string) => has(r) || problems.push(`${id}: ${where} names unknown role "${r}"`);
+    for (const [n, spec] of Object.entries(e.credentials ?? {})) for (const msg of providerFor(spec).validate(n, spec)) problems.push(`${id}: ${msg}`);
     ref("defaultRole", e.defaultRole);
     for (const [n, w] of Object.entries(e.workstreams)) ref(`workstream ${n} entryRole`, w.entryRole);
     for (const [n, m] of Object.entries(e.monitors)) ref(`monitor ${n} role`, m.role);

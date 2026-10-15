@@ -41,3 +41,15 @@ describe("checkConfig", () => {
     expect(await checkConfig({ dirs })).toEqual([]);
   });
 });
+
+describe("checkConfig credentials", () => {
+  const header = (creds: string) => `credentials:\n${creds}`;
+  it("reports a provider's validation problem", async () => {
+    const p = await checkConfig({ dirs: await cfg("    grants: [az]\n", header("  az: { kind: federated, provider: azure, tenantId: nope, clientId: nope }\n")) });
+    expect(p).toEqual(['e: credential "az": tenantId is not a GUID', 'e: credential "az": clientId is not a GUID']);
+  });
+  it("reports two grants of one role that set the same env var", async () => {
+    const creds = "  a: { kind: secret, env: { X: { value: '1' } } }\n  b: { kind: secret, env: { X: { value: '2' } } }\n";
+    expect(await checkConfig({ dirs: await cfg("    grants: [a, b]\n", header(creds)) })).toEqual(['e: role r grants "a" and "b", which both set X']);
+  });
+});

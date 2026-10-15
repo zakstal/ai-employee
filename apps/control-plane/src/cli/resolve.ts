@@ -64,7 +64,7 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
       prompts[`${e.id}.${role.id}`] = prompt;
       roles[role.id] = withEnv(procEnv, () => describeRole(e, role, config, registered, jobs, prompt));
     }
-    out[e.id] = { name: e.name, defaultRole: e.defaultRole, workstreams: e.workstreams, monitors: e.monitors, ...(e.credentials ? { credentials: e.credentials } : {}), roles };
+    out[e.id] = { name: e.name, defaultRole: e.defaultRole, workstreams: e.workstreams, monitors: e.monitors, ...(e.credentials ? { credentials: e.credentials } : {}), ...(e.sandbox ? { sandbox: e.sandbox } : {}), roles };
   }
   return {
     json: sortKeys({
@@ -80,7 +80,7 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
 function describeRole(employee: Employee, role: Role, config: Config, registered: string[], jobs: CloudRunJobRuntime, prompt: string) {
   const envNames = grantEnvNames(employee, role, config);
   const runtimeUsed = runtimeFor(role, config.SANDBOX_RUNTIME, registered);
-  const { image, jobName } = resolveImage(role, config);
+  const { image, jobName } = resolveImage(role, config, employee);
   return {
     model: role.model ?? null,
     maxTurns: role.maxTurns,
