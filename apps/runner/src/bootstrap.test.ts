@@ -48,6 +48,13 @@ describe("bootstrapTools", () => {
     expect(run.mock.calls.map((c) => c[0])).toEqual([path.join(dir, "10-a.sh"), path.join(dir, "20-b.sh")]);
     expect(notes).toEqual(["hook a ok", "hook b ok"]);
   });
+  it("reports a failing bootstrap.d hook instead of throwing", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "bootstrap-d-"));
+    writeFileSync(path.join(dir, "10-bad.sh"), "");
+    chmodSync(path.join(dir, "10-bad.sh"), 0o755);
+    const run = vi.fn().mockReturnValue({ status: 1, stdout: "", stderr: "boom" });
+    expect(bootstrapTools({ BOOTSTRAP_D_DIR: dir }, run as never)).toEqual(["bootstrap.d/10-bad.sh: failed: boom"]);
+  });
   it("skips bootstrap.d when the directory does not exist", () => {
     const run = vi.fn();
     expect(bootstrapTools({ BOOTSTRAP_D_DIR: "/nonexistent/bootstrap.d" }, run as never)).toEqual([]);
