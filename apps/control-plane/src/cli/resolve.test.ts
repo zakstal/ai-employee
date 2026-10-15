@@ -43,3 +43,24 @@ describe("resolveEffectiveConfig", () => {
     expect(r.cloudRunJob).toBe("acme-runner-ops");
   });
 });
+
+describe("schedules in the resolved config", () => {
+  const yaml = "id: e\nname: E\ndefaultRole: r\nroles:\n  - { id: r }\nschedules:\n  nightly: { cron: '0 1 * * *', timezone: America/Los_Angeles, role: r, prompt: go, deliverTo: { channel: clickup-chat, threadRef: t } }\n";
+  it("lists config schedules and, with a live url, only the runtime ones", async () => {
+    const d = await mkdtemp(path.join(tmpdir(), "resolve-sch-"));
+    await writeFile(path.join(d, "e.yaml"), yaml);
+    const live = [
+      { name: "nightly", cron: "0 1 * * *", timezone: "America/Los_Angeles", role_id: "r", enabled: true, next_fire_at: "x", source: "config" },
+      { name: "mine", cron: "0 9 * * *", timezone: "UTC", role_id: "r", enabled: true, next_fire_at: "y", source: "runtime" },
+    ];
+    const fakeFetch = (async () => new Response(JSON.stringify(live))) as unknown as typeof fetch;
+    const { json } = await resolveEffectiveConfig({ dirs: [d], liveUrl: "http://cp", fetch: fakeFetch });
+    const e = (json.employees as Record<string, { schedulesInConfig: Record<string, { cron: string }>; schedulesRuntime: { name: string }[] }>).e!;
+    expect(e.schedulesInConfig.nightly!.cron).toBe("0 1 * * *");
+    expect(e.schedulesRuntime.map((s) => s.name)).toEqual(["mine"]);
+  });
+  it("is absent when the employee has none", async () => {
+    const { json } = await resolveEffectiveConfig({ dirs: [dir] });
+    expect(JSON.stringify(json)).not.toContain("schedulesInConfig");
+  });
+});

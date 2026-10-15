@@ -101,6 +101,10 @@ export async function loadEmployees(dirs: string | string[]): Promise<Map<string
         if (files.length) role.systemPrompt = (await Promise.all(files.map((f) => resolvePrompt(list, f, role.id)))).join("\n\n");
         role.systemPrompt = substitute(role.systemPrompt, vars, role.id);
       }
+      for (const [name, sch] of Object.entries(parsed.data.schedules ?? {})) {
+        if (sch.promptFile) sch.prompt = substitute(await resolvePrompt(list, sch.promptFile, `schedule ${name}`), vars, `schedule ${name}`);
+        else if (sch.prompt) sch.prompt = substitute(sch.prompt, vars, `schedule ${name}`);
+      }
       out.set(parsed.data.id, parsed.data);
     }
   }

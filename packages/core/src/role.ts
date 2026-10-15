@@ -62,6 +62,25 @@ export const MonitorSchema = z.object({
 });
 export type Monitor = z.infer<typeof MonitorSchema>;
 
+/**
+ * Schedule = a cron entry kept in the employee file (config as code) and reconciled into the database at boot.
+ * Schedules an agent creates at runtime stay possible; config ones win a name clash and cannot be deleted over HTTP.
+ */
+export const ScheduleSchema = z
+  .object({
+    cron: z.string().min(1),
+    /** IANA zone; default is the control plane's DEFAULT_TZ. */
+    timezone: z.string().min(1).optional(),
+    role: z.string().min(1),
+    prompt: z.string().min(1).optional(),
+    /** Path (relative to the config dirs) of a markdown file whose contents become `prompt`. Exactly one of prompt / promptFile. */
+    promptFile: z.string().min(1).optional(),
+    deliverTo: z.object({ channel: z.enum(["clickup", "clickup-chat"]), threadRef: z.string().min(1) }),
+    enabled: z.boolean().default(true),
+  })
+  .refine((s) => Number(!!s.prompt) + Number(!!s.promptFile) === 1, { message: "exactly one of prompt or promptFile is required" });
+export type ScheduleConfig = z.infer<typeof ScheduleSchema>;
+
 export const EmployeeSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -70,6 +89,8 @@ export const EmployeeSchema = z.object({
   /** Named entry points for POST /agents { workstream }, resolving to a starting role. */
   workstreams: z.record(z.object({ entryRole: z.string().min(1), description: z.string().optional() })).default({}),
   monitors: z.record(MonitorSchema).default({}),
+  /** Cron schedules defined in config, reconciled into the database at boot (see ScheduleSchema). */
+  schedules: z.record(ScheduleSchema).optional(),
   /** Values for `{{NAME}}` in prompts. Built in: BOT_NAME, EMPLOYEE_ID, PR_SIGNATURE. */
   vars: z.record(z.string()).optional(),
   /** Named logins and how to obtain each (see CredentialSpecSchema). Without it, grants resolve to the built-in env-based ones. */

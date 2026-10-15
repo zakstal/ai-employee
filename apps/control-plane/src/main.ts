@@ -10,6 +10,7 @@ import { EnvSecretStore, GcpSecretStore } from "./credentials/index.js";
 import { setWorkflowDeps } from "./orchestration/deps.js";
 import { DbosOrchestrator } from "./orchestration/dbos-orchestrator.js";
 import { registerDigestWorkflow } from "./orchestration/digest-workflow.js";
+import { reconcileSchedules } from "./schedules/reconcile.js";
 import { loadEmployees } from "./roles/load.js";
 import { HttpSlackClient } from "./slack/client.js";
 import { HttpClickUpClient } from "./clickup/client.js";
@@ -24,6 +25,8 @@ async function main(): Promise<void> {
   const ledger = new Ledger(pool);
   const employees = await loadEmployees(configDirs(config));
   for (const e of employees.values()) await ledger.ensureEmployee(e.id, e.name);
+  // Only the control plane that owns the tick writes schedules; a parked secondary sharing the DB must not.
+  if (config.TICK_ENABLED) await reconcileSchedules({ ledger, employees, defaultTz: config.DEFAULT_TZ, log: (m) => console.log(m) });
 
   // Only construct the runtime the deployment selected: k8s needs a kubeconfig, cloudrun needs GCP ADC.
   const runtimes: Record<string, SandboxRuntime> = {
