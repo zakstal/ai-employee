@@ -41,7 +41,7 @@ export class DbosOrchestrator implements Orchestrator {
     return row?.status ?? "unknown";
   }
 
-  async schedule(_name: string, _cron: string, _input: TaskInput): Promise<void> {
+  async schedule(): Promise<void> {
     // ponytail: cron slice not in milestone one. DBOS.registerScheduled needs
     // registration at boot; implement as a table of schedules loaded at launch.
     throw new Error("schedule() not implemented yet");

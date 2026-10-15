@@ -414,7 +414,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
     });
 
     it("409s at max depth on a grandchild spawning its own child", async () => {
-      const { taskId: rootId, headers: rootHeaders } = await taskAndToken(); // depth 0
+      const { headers: rootHeaders } = await taskAndToken(); // depth 0
       const gen1 = await app.inject({ method: "POST", url: "/agents", headers: rootHeaders, payload: { role: "assistant", brief: "gen1" } });
       const { agentId: gen1Id } = gen1.json() as { agentId: string };
       const gen1Headers = { authorization: `Bearer ${await ledger.issueRunToken(gen1Id, 600)}`, "x-task-id": gen1Id };
