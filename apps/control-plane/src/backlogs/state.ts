@@ -1,5 +1,6 @@
 import type { Backlog } from "@ai-employee/core";
 import type { ClickUpClient } from "../clickup/client.js";
+import { ghGet, ghList } from "../github-api.js";
 import { parseTaskList, slug, type TaskListItem } from "./task-list.js";
 
 export interface BacklogTaskRow {
@@ -56,24 +57,8 @@ interface Pr {
   merged_at: string | null;
 }
 
-async function gh(d: StateDeps, path: string, accept = "application/vnd.github+json"): Promise<Response> {
-  const res = await d.fetch(`https://api.github.com${path}`, {
-    headers: { accept, "user-agent": "ai-employee", ...(d.githubToken ? { authorization: `Bearer ${d.githubToken}` } : {}) },
-  });
-  if (!res.ok) throw new Error(`github GET ${path} -> ${res.status} ${(await res.text()).slice(0, 120)}`);
-  return res;
-}
-
-/** All pages (100 each, capped at 10) of a GitHub list endpoint. */
-async function ghList<T>(d: StateDeps, path: string): Promise<T[]> {
-  const out: T[] = [];
-  for (let page = 1; page <= 10; page++) {
-    const rows = (await (await gh(d, `${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`)).json()) as T[];
-    out.push(...rows);
-    if (rows.length < 100) break;
-  }
-  return out;
-}
+const gh = (d: StateDeps, path: string, accept?: string) => ghGet(d.fetch, d.githubToken, path, accept);
+const ghPages = <T>(d: StateDeps, path: string) => ghList<T>(d.fetch, d.githubToken, path);
 
 interface Source {
   items: TaskListItem[];
@@ -94,11 +79,11 @@ async function readSource(d: StateDeps, b: Backlog, branchOf: (id: string) => st
   const prs = new Map<string, { open: boolean; merged: boolean }>();
   const branches = new Set<string>();
   if (b.done.rule === "branch-pushed") {
-    for (const br of await ghList<{ name: string }>(d, `/repos/${src.repo}/branches`)) branches.add(br.name);
+    for (const br of await ghPages<{ name: string }>(d, `/repos/${src.repo}/branches`)) branches.add(br.name);
   } else {
     const base = b.done.base ?? src.ref;
     const byBranch = new Map(items.map((i) => [branchOf(i.id), i.id]));
-    for (const pr of await ghList<Pr>(d, `/repos/${src.repo}/pulls?state=all&base=${encodeURIComponent(base)}`)) {
+    for (const pr of await ghPages<Pr>(d, `/repos/${src.repo}/pulls?state=all&base=${encodeURIComponent(base)}`)) {
       const id = byBranch.get(pr.head.ref);
       if (!id) continue;
       const prev = prs.get(id) ?? { open: false, merged: false };

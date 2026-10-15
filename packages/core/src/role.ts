@@ -52,12 +52,13 @@ export type Role = z.infer<typeof RoleSchema>;
  * (default OFF); the definition lives here.
  */
 export const MonitorSchema = z.object({
-  collector: z.enum(["azure-errors", "clickup-channels"]),
+  /** Id of a registered collector: azure-errors, clickup-channels, github-prs, github-checks, clickup-task-status, git-branches, or a plugin. Checked against the registry at boot and in `config check`. */
+  collector: z.string().min(1),
   everyMin: z.number().int().min(1).max(1440).default(5),
   role: z.string().min(1),
   description: z.string().default(""),
   config: z.record(z.unknown()).default({}),
-  /** Name of one of the employee's `credentials` (kind `broker` or `federated`) the azure-errors collector signs in with. Without it the collector reads the global AZURE_* env. */
+  /** Name of one of the employee's logins the collector signs in with: kind `broker` or `federated` for azure-errors (without it the global AZURE_* env is read); a GitHub token login for the github-* and git-branches collectors (default grant `github`). */
   credential: z.string().optional(),
 });
 export type Monitor = z.infer<typeof MonitorSchema>;

@@ -236,7 +236,7 @@ role's `canSpawn`; to reorder stages, edit the prompt.
 ```yaml
 monitors:
   azure-errors:                  # name; used by enable_monitor / disable_monitor
-    collector: azure-errors      # azure-errors | clickup-channels
+    collector: azure-errors      # a collector id: azure-errors | clickup-channels | github-prs | github-checks | clickup-task-status | git-branches | a plugin
     everyMin: 5                  # 1 to 1440, default 5
     role: monitor-triage         # role that receives new findings
     description: "..."
@@ -250,6 +250,10 @@ unset the result is only stored in the ledger (visible at `/status`).
 
 **Monitors are off by default.** The YAML defines them; whether one runs is a row in the `monitors` table. A collector that fails twice in
 a row produces a finding about itself; one failure is ignored. The first run only records a baseline.
+
+A monitor's `collector` names an entry in the collector registry, and its `config` is validated against that collector's schema at boot
+(a bad one stops the control plane) and in `config check`. `credential` names the login the collector signs in with.
+Every collector records a baseline on its first run and reports only changes after it.
 
 ### Collector `azure-errors`
 
@@ -277,6 +281,26 @@ Reports new human messages in ClickUp chat channels. Needs `CLICKUP_API_TOKEN` a
 | `limit` | `25` | messages fetched per channel per run |
 
 Messages that start with the bot marker (the robot emoji) are skipped.
+
+### Generic collectors
+
+GitHub ones read with the monitor's `credential` (default grant `github`; a token with read access to the repos).
+
+| collector | `config` | finding |
+|---|---|---|
+| `github-prs` | `repos: [owner/name]`, `authors?`, `labels?`, `events?: [opened, ready, review-requested]` (default opened, ready) | a PR opened, a draft marked ready, a new reviewer requested; once each |
+| `github-checks` | `repos`, `branches` (default `[main]`) | the latest commit of a branch has failing check runs; once per commit; pending runs ignored |
+| `clickup-task-status` | `listIds: [..]`, `statuses?: [..]` | a task entered one of the statuses (any change if omitted); needs `CLICKUP_API_TOKEN` |
+| `git-branches` | `repos`, `pattern` (glob, `*` matches anything; default `*`) | a matching branch appeared or its head moved |
+
+### Collector plugins
+
+A config folder may carry `collectors/*.mjs`. Each file's default export is a collector:
+`{ id, configSchema, collect(ctx, config, prev) }`, where `configSchema` is anything with `parse` and `safeParse` (a zod schema, or hand-written, since the
+file has no `node_modules` of its own), and `collect` returns `{ findings, state }` (`ctx` has `fetch`, `clickup`, `now`, `employee`, `monitor`, and
+`credential(name)`, the env of one of the employee's logins). Plugins run inside the control plane with its privileges, so they ship in the config
+repo's image and never come from a task. A plugin that fails to import, is not a collector or reuses an id is logged and skipped at boot (and is a `config check` problem);
+a monitor that names it then stops the boot. `config resolve` lists loaded plugins as `collectorPlugins`.
 
 ## Schedules
 

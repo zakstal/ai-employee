@@ -10,6 +10,7 @@ import { EnvSecretStore, GcpSecretStore } from "./credentials/index.js";
 import { setWorkflowDeps } from "./orchestration/deps.js";
 import { DbosOrchestrator } from "./orchestration/dbos-orchestrator.js";
 import { registerDigestWorkflow } from "./orchestration/digest-workflow.js";
+import { loadPlugins, monitorProblems } from "./collectors/index.js";
 import { reconcileSchedules } from "./schedules/reconcile.js";
 import { loadEmployees } from "./roles/load.js";
 import { HttpSlackClient } from "./slack/client.js";
@@ -24,6 +25,12 @@ async function main(): Promise<void> {
   const pool = getPool(config.DATABASE_URL);
   const ledger = new Ledger(pool);
   const employees = await loadEmployees(configDirs(config));
+  // Collector plugins come from the config dirs. A broken one is logged loudly and skipped; a monitor that needs it then fails below.
+  const plugins = await loadPlugins(configDirs(config));
+  for (const err of plugins.errors) console.error(err);
+  if (plugins.loaded.length) console.log(`collector plugins: ${plugins.loaded.join(", ")}`);
+  const bad = monitorProblems(employees.values());
+  if (bad.length) throw new Error(`invalid monitor config:\n  ${bad.join("\n  ")}`);
   for (const e of employees.values()) await ledger.ensureEmployee(e.id, e.name);
   // Only the control plane that owns the tick writes schedules; a parked secondary sharing the DB must not.
   if (config.TICK_ENABLED) await reconcileSchedules({ ledger, employees, defaultTz: config.DEFAULT_TZ, log: (m) => console.log(m) });
