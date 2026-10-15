@@ -27,8 +27,7 @@ async function pickRuntime(input: TaskInput): Promise<string> {
   const { config, employees, runtimes } = deps();
   const employee = employees.get(input.employeeId);
   const role = employee ? resolveRole(employee, input.roleId) : undefined;
-  if (role?.runtime && role.runtime !== "k8s" && runtimes[role.runtime]) return role.runtime;
-  return config.SANDBOX_RUNTIME;
+  return s.runtimeFor(role, config.SANDBOX_RUNTIME, Object.keys(runtimes));
 }
 
 export const taskWorkflow = DBOS.registerWorkflow(taskWorkflowBody, { name: "taskWorkflow" });

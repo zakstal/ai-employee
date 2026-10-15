@@ -57,6 +57,12 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
   };
 }
 
+/** Runtime a role runs on: its own if this deployment registered it (k8s is the default tier), else the deployment default. */
+export function runtimeFor(role: Role | undefined, defaultRuntime: string, registered: string[]): string {
+  if (role?.runtime && role.runtime !== "k8s" && registered.includes(role.runtime)) return role.runtime;
+  return defaultRuntime;
+}
+
 /**
  * Deterministic statement of what this run can actually use, derived from the role's grants and
  * tool allowlist. Models otherwise infer capabilities from earlier chat turns or from tool NAMES
