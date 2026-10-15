@@ -60,7 +60,7 @@ Create the app once (an organisation owner does this):
 
 Limits to know:
 
-- Installation tokens last exactly one hour and cannot be extended. A run longer than that loses `git` and `gh` unless the token is refreshed (a later change); keep such roles on a `secret` token meanwhile.
+- Installation tokens last exactly one hour and cannot be extended. A run longer than that keeps working because the runner re-fetches a token (see "Runs longer than a token lives").
 - GitHub Packages' npm registry has historically not accepted installation tokens. If `npm install` of a private `@scope` package fails, keep a separate `secret` login that sets only `NPM_GITHUB_TOKEN` and list `env: [GH_TOKEN]` on the app login.
 - App tokens cannot call `gh api user`; use `gh api repos/<owner>/<repo>` to test.
 
@@ -135,3 +135,9 @@ node apps/control-plane/dist/cli/credentials.js check <employee> [grant] --proje
 ```
 
 `set` reads the value from stdin or `--from-file` (never argv) and adds a new Secret Manager version for the secret the login references (`--env` picks one when a login has several). The secret must already exist as an empty shell. `list` shows each login, its env names and the latest version of its secrets. `check` does the real resolve (it mints a GitHub App token, for instance) and prints env names and expiry, never values; it exits 1 on failure. All take `--dir <config dir>`; `check` takes `--store env` to read `SECRET_<NAME>` instead of Secret Manager.
+
+## Runs longer than a token lives
+
+A role granted a `minted` GitHub login gets `GH_TOKEN_REFRESH=<grant>` and `CONTROL_PLANE_URL` in its run env. In the runner image, git uses the `ai-employee-credential git` credential helper and `/usr/local/bin/gh` is a wrapper that exports a fresh `GH_TOKEN` before calling the real `gh`. Both call `POST /credentials/<grant>/refresh` with the run token, cache the answer in a 0600 file until five minutes before it expires, and so keep working past the first hour. The route answers only for a grant the run's role holds, only for refreshable kinds (`minted`), at most 60 times per run. Env vars already exported to child processes keep their first token; tools that read `GH_TOKEN` directly instead of through `gh` or git must be started after a refresh.
+
+Not covered: a `federated` Azure session also lasts about an hour; its re-login helper is not built.

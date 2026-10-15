@@ -57,10 +57,11 @@ export function bootstrapTools(env: NodeJS.ProcessEnv, run = spawnSync): string[
 
   // gh reads GH_TOKEN directly. Make git use it too, and give commits an identity.
   if (env.GH_TOKEN) {
-    run("git", ["config", "--global", "credential.helper", "!gh auth git-credential"], { env, stdio: "ignore" });
+    // A refreshable login (GitHub App token, one hour) goes through the credential helper so a long run keeps pushing.
+    run("git", ["config", "--global", "credential.helper", env.GH_TOKEN_REFRESH ? "!ai-employee-credential git" : "!gh auth git-credential"], { env, stdio: "ignore" });
     run("git", ["config", "--global", "user.name", env.GIT_AUTHOR_NAME ?? "Dev Bot"], { env, stdio: "ignore" });
     run("git", ["config", "--global", "user.email", env.GIT_AUTHOR_EMAIL ?? "devbot@users.noreply.github.com"], { env, stdio: "ignore" });
-    notes.push("git: credential helper → gh");
+    notes.push(env.GH_TOKEN_REFRESH ? "git: credential helper → control plane (refreshing)" : "git: credential helper → gh");
   }
 
   // Image-specific setup hook: derived images drop executables into this dir (default /etc/ai-employee/bootstrap.d)
