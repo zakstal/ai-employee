@@ -3,6 +3,8 @@ import type { Config } from "../config.js";
 import { deps } from "./deps.js";
 import { requestWake, shouldWake } from "../manager/tick.js";
 import { BOT_MARKER } from "../clickup/chat.js";
+import { backlogPromptState } from "../backlogs/service.js";
+import { renderBacklogs } from "../backlogs/render.js";
 import { grantEnvNames, grantPurposes, refreshableGrant, resolveGrantEnv } from "../credentials/index.js";
 
 /**
@@ -24,8 +26,8 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
   const env: Record<string, string> = {
     TASK_ID: taskId,
     GIT_AUTHOR_NAME: employee.name,
-    TASK_PROMPT: await enrichPrompt(input, sessionId !== null),
-    SYSTEM_PROMPT: `${role.systemPrompt.trimEnd()}\n\n${environmentFooter(role, employee)}`,
+    TASK_PROMPT: await enrichPrompt(input, sessionId !== null, role, employee),
+    SYSTEM_PROMPT: `${role.systemPrompt.trimEnd()}\n\n${environmentFooter(role, employee, config.MANAGER_ROLE)}`,
     ALLOWED_TOOLS: role.allowedTools.join(","),
     DISALLOWED_TOOLS: role.disallowedTools.join(","),
     MAX_TURNS: String(role.maxTurns),
@@ -85,7 +87,7 @@ export function runtimeFor(role: Role | undefined, defaultRuntime: string, regis
  * tool allowlist. Models otherwise infer capabilities from earlier chat turns or from tool NAMES
  * ("no Azure tool") — az/gh/git are shell commands behind Bash, not named tools.
  */
-export function environmentFooter(role: Role, employee?: Employee): string {
+export function environmentFooter(role: Role, employee?: Employee, managerRole?: string): string {
   const lines: string[] = ["## Your environment (authoritative — do not infer capabilities from earlier messages)"];
   const bash = role.allowedTools.filter((t) => t.startsWith("Bash("));
   const purposes = grantPurposes(employee, role);
@@ -104,6 +106,7 @@ export function environmentFooter(role: Role, employee?: Employee): string {
   if (role.capabilities.includes("monitors")) lines.push("- Monitors (background sweeps, default OFF): `list_monitors`, `enable_monitor`, `disable_monitor`. Turn one on/off when the user asks.");
   if (bash.length) lines.push(`- Shell commands allowed: ${bash.map((b) => b.slice(5, -1)).join(", ")}. Anything else via Bash is denied.`);
   lines.push("- If you are unsure whether something works, run it once and report the actual result. Never claim a tool is unavailable without trying.");
+  if (employee && managerRole && role.id === managerRole && employee.backlogs) lines.push("", renderBacklogs(employee));
   return lines.join("\n");
 }
 
@@ -123,7 +126,14 @@ export function resolvableMcpServers(servers: Record<string, unknown>, env: Reco
 }
 
 /** Channel-specific context the agent needs but the webhook did not carry. */
-async function enrichPrompt(input: TaskInput, resuming = false): Promise<string> {
+async function enrichPrompt(input: TaskInput, resuming = false, role?: Role, employee?: Employee): Promise<string> {
+  const base = await enrichChannel(input, resuming);
+  // The manager sees the same computed backlog state on every run: cron, wake and heartbeat alike.
+  if (role && employee && role.id === deps().config.MANAGER_ROLE && employee.backlogs) return `${base}\n\n${await backlogPromptState(employee)}`;
+  return base;
+}
+
+async function enrichChannel(input: TaskInput, resuming: boolean): Promise<string> {
   if (input.source.channel === "clickup" && input.source.threadRef) {
     const t = await deps().clickup.getTask(input.source.threadRef);
     const header = [`ClickUp task ${t.id}: ${t.name}`, t.url ? `URL: ${t.url}` : "", t.status?.status ? `Status: ${t.status.status}` : "", t.description ? `\nDescription:\n${t.description}` : ""]
@@ -289,6 +299,7 @@ export async function postResult(taskId: string, input: TaskInput, exit: RunExit
     // escalation, e.g. monitor triage → sdlc): nobody will relay, so post to the root thread ourselves.
     const parent = input.source.parentTaskId ? await ledger.getTask(input.source.parentTaskId) : undefined;
     if (!parent || parent.status === "running" || parent.status === "queued" || parent.status === "awaiting_input") return;
+    if (input.source.backlogId) return; // backlog items are covered by the manager's summary; failures still alert
     const root = await rootTask(input.source.parentTaskId!);
     const relay = `${BOT_MARKER}Follow-up from ${input.roleId} (${taskId}):\n${text}`;
     try {

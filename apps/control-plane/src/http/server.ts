@@ -10,6 +10,8 @@ import { verifyClickUpSignature } from "../clickup/verify.js";
 import { clickUpTrigger, type ClickUpWebhook } from "../clickup/webhook.js";
 import { chatTrigger, BOT_MARKER } from "../clickup/chat.js";
 import type { ClickUpClient } from "../clickup/client.js";
+import { briefFor } from "../backlogs/render.js";
+import { fill } from "../backlogs/state.js";
 import { validateCron } from "../schedules/cron.js";
 import { providerFor } from "../credentials/index.js";
 import { deps as workflowDeps } from "../orchestration/deps.js";
@@ -58,6 +60,14 @@ const CreateScheduleBody = z.object({
   deliverTo: z.object({ channel: z.string(), threadRef: z.string() }).optional(),
 });
 
+const ACTIVE_STATUSES = new Set(["queued", "running", "awaiting_input"]);
+
+/** A `guard: ...` message when dispatch for the backlog must be refused, else undefined. (Limits arrive in the flow-guards change.) */
+async function checkBacklogGuards(_ledger: Ledger, employee: Employee, backlogId: string): Promise<string | undefined> {
+  if (!employee.backlogs?.[backlogId]?.enabled) return "guard: disabled";
+  return undefined;
+}
+
 const MAX_ENABLED_SCHEDULES = 20;
 const MAX_SPAWN_DEPTH = 2;
 const MAX_ACTIVE_CHILDREN = 4;
@@ -69,8 +79,13 @@ const CreateAgentBody = z
     role: z.string().min(1).optional(),
     workstream: z.string().min(1).optional(),
     brief: z.string().min(1),
+    /** Manager only: dispatch `item` of the configured backlog. The system fills the backlog's brief template and counts the task against its limits. */
+    backlog: z.string().min(1).optional(),
+    item: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/).optional(),
   })
-  .refine((b) => Number(!!b.role) + Number(!!b.workstream) === 1, { message: "exactly one of role or workstream is required" });
+  .refine((b) => Number(!!b.role) + Number(!!b.workstream) === 1, { message: "exactly one of role or workstream is required" })
+  .refine((b) => !!b.backlog === !!b.item, { message: "backlog and item go together" })
+  .refine((b) => !b.backlog || !!b.role, { message: "a backlog item is dispatched by role, not workstream" });
 
 const AskBody = z.object({ question: z.string().min(1) });
 
@@ -402,6 +417,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (!role.canSpawn.includes(targetRoleId)) return reply.code(403).send({ error: `role ${role.id} may not spawn role ${targetRoleId}` });
     if (!employee.roles.some((r) => r.id === targetRoleId)) return reply.code(400).send({ error: `employee ${employee.id} has no role ${targetRoleId}` });
 
+    // Backlog dispatch: only the manager, only the backlog's role, never a disabled backlog or an item already in flight.
+    let brief = body.data.brief;
+    let backlogSource: { managedBy: string; backlogId: string; backlogItem: string } | undefined;
+    if (body.data.backlog) {
+      const { backlog: id, item } = body.data as { backlog: string; item: string };
+      if (!config.MANAGER_ROLE || role.id !== config.MANAGER_ROLE) return reply.code(403).send({ error: "only the manager role may dispatch backlog items" });
+      const bl = employee.backlogs?.[id];
+      if (!bl) return reply.code(400).send({ error: `employee ${employee.id} has no backlog ${id}` });
+      if (targetRoleId !== bl.dispatch.role) return reply.code(400).send({ error: `backlog ${id} dispatches role ${bl.dispatch.role}, not ${targetRoleId}` });
+      const guard = await checkBacklogGuards(ledger, employee, id);
+      if (guard) return reply.code(409).send({ error: guard });
+      if ((await ledger.tasksByBacklog(employee.id, id)).some((t) => t.item === item && ACTIVE_STATUSES.has(t.status))) return reply.code(409).send({ error: `guard: item ${item} is already running` });
+      const notes = body.data.brief.trim();
+      brief = `${briefFor(id, bl, item, fill(bl.done.branchPattern, { backlog: id, item }))}\n\nManager notes:\n${notes}`;
+      backlogSource = { managedBy: role.id, backlogId: id, backlogItem: item };
+    }
+
     const childDepth = depth + 1;
     if (childDepth > MAX_SPAWN_DEPTH) return reply.code(409).send({ error: "max depth" });
     if ((await ledger.countActiveChildren(callerTaskId)) >= MAX_ACTIVE_CHILDREN) return reply.code(409).send({ error: `max ${MAX_ACTIVE_CHILDREN} active children` });
@@ -410,8 +442,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     await orchestrator.startTask(agentId, {
       employeeId: employee.id,
       roleId: targetRoleId,
-      prompt: body.data.brief,
-      source: { channel: "child", parentTaskId: callerTaskId, threadRef: source.threadRef, originChannel: source.channel, depth: childDepth, ...(auth.conversationId ? { conversationId: auth.conversationId } : {}) },
+      prompt: brief,
+      source: { channel: "child", parentTaskId: callerTaskId, threadRef: source.threadRef, originChannel: source.channel, depth: childDepth, ...(auth.conversationId ? { conversationId: auth.conversationId } : {}), ...backlogSource },
     });
     return reply.code(201).send({ agentId, role: targetRoleId, status: "queued" });
   });

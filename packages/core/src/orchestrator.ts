@@ -38,6 +38,9 @@ export interface TaskSource {
    * wake itself forever.
    */
   managedBy?: string;
+  /** Set on a child the manager spawned for a backlog item: it counts toward the backlog's limits and wakes the manager when it ends. */
+  backlogId?: string;
+  backlogItem?: string;
 }
 
 export interface TaskInput {
