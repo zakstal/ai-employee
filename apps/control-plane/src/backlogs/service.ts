@@ -19,6 +19,8 @@ export async function backlogPromptState(employee: Employee): Promise<string> {
   if (!ids.length) return "";
   const states = await Promise.all(
     ids.map(async (id) => {
+      // A disabled backlog is not read at all (no GitHub calls, no failures for a source that may not exist yet).
+      if (!employee.backlogs![id]!.enabled) return { id, error: "disabled in config" };
       try {
         return { id, state: await computeBacklogState(employee, id) };
       } catch (e) {

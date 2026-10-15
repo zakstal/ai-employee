@@ -742,6 +742,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       expect(spec.env.TASK_PROMPT).toContain("## Backlog state");
       expect(spec.env.TASK_PROMPT).toMatch(/ready \(in order\):\n {2}- t1 /);
       expect(spec.env.TASK_PROMPT).toContain("1/2 done");
+      expect(spec.env.TASK_PROMPT).toContain("### off\nState unavailable (disabled in config). Dispatch nothing");
       const other = await buildRunSpec(taskId, { employeeId: "dev", roleId: "assistant", prompt: "go", source: { channel: "http" } });
       expect(other.env.TASK_PROMPT).not.toContain("Backlog state");
     });
