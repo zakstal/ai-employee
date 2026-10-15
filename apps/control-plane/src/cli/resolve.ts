@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { CloudRunJobRuntime } from "@ai-employee/adapters";
-import type { Role } from "@ai-employee/core";
+import { roleGrants, type Employee, type Role } from "@ai-employee/core";
 import { loadConfig, type Config } from "../config.js";
 import { loadEmployees } from "../roles/load.js";
-import { environmentFooter, resolveCredentials, resolveImage, resolvableMcpServers, runtimeFor } from "../orchestration/steps.js";
+import { grantEnvNames } from "../credentials/index.js";
+import { environmentFooter, resolveImage, resolvableMcpServers, runtimeFor } from "../orchestration/steps.js";
 
 export interface ResolveOptions {
   dirs: string[];
@@ -59,11 +60,11 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
   for (const e of [...employees.values()].sort((a, b) => a.id.localeCompare(b.id))) {
     const roles: Record<string, unknown> = {};
     for (const role of e.roles) {
-      const prompt = `${role.systemPrompt.trimEnd()}\n\n${environmentFooter(role)}`;
+      const prompt = `${role.systemPrompt.trimEnd()}\n\n${environmentFooter(role, e)}`;
       prompts[`${e.id}.${role.id}`] = prompt;
-      roles[role.id] = withEnv(procEnv, () => describeRole(role, config, registered, jobs, prompt));
+      roles[role.id] = withEnv(procEnv, () => describeRole(e, role, config, registered, jobs, prompt));
     }
-    out[e.id] = { name: e.name, defaultRole: e.defaultRole, workstreams: e.workstreams, monitors: e.monitors, roles };
+    out[e.id] = { name: e.name, defaultRole: e.defaultRole, workstreams: e.workstreams, monitors: e.monitors, ...(e.credentials ? { credentials: e.credentials } : {}), roles };
   }
   return {
     json: sortKeys({
@@ -76,8 +77,8 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
   };
 }
 
-function describeRole(role: Role, config: Config, registered: string[], jobs: CloudRunJobRuntime, prompt: string) {
-  const envNames = Object.keys(resolveCredentials(role.credentials, config)).sort();
+function describeRole(employee: Employee, role: Role, config: Config, registered: string[], jobs: CloudRunJobRuntime, prompt: string) {
+  const envNames = grantEnvNames(employee, role, config);
   const runtimeUsed = runtimeFor(role, config.SANDBOX_RUNTIME, registered);
   const { image, jobName } = resolveImage(role, config);
   return {
@@ -92,7 +93,7 @@ function describeRole(role: Role, config: Config, registered: string[], jobs: Cl
     ...(role.imageRef ? { imageRef: role.imageRef } : {}),
     imageResolved: image,
     cloudRunJob: runtimeUsed === "cloudrun" ? jobs.jobPathFor(image, jobName).split("/").pop() : null,
-    credentials: role.credentials,
+    credentials: roleGrants(role),
     credentialEnvNames: envNames,
     allowedTools: role.allowedTools,
     disallowedTools: role.disallowedTools,

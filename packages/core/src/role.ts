@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CredentialSpecSchema } from "./credentials.js";
 
 /**
  * Role = deterministic capability config for an employee. Lives in git as YAML,
@@ -30,6 +31,8 @@ export const RoleSchema = z.object({
   timeoutSec: z.number().int().positive().default(1800),
   /** Named credential grants resolved by the control plane into short-lived tokens. */
   credentials: z.array(z.string()).default([]),
+  /** Names of the employee's `credentials` this role may use. Same meaning as the legacy `credentials` list above, which stays accepted as an alias. */
+  grants: z.array(z.string()).optional(),
   /** Repositories cloned into /workspace before the harness starts (needs the github grant for private repos). */
   repos: z
     .array(z.object({ url: z.string().url(), ref: z.string().optional(), path: z.string().optional() }))
@@ -67,6 +70,8 @@ export const EmployeeSchema = z.object({
   monitors: z.record(MonitorSchema).default({}),
   /** Values for `{{NAME}}` in prompts. Built in: BOT_NAME, EMPLOYEE_ID, PR_SIGNATURE. */
   vars: z.record(z.string()).optional(),
+  /** Named logins and how to obtain each (see CredentialSpecSchema). Without it, grants resolve to the built-in env-based ones. */
+  credentials: z.record(CredentialSpecSchema).optional(),
 });
 export type Employee = z.infer<typeof EmployeeSchema>;
 
@@ -75,4 +80,9 @@ export function resolveRole(employee: Employee, roleId?: string): Role {
   const role = employee.roles.find((r) => r.id === id);
   if (!role) throw new Error(`employee ${employee.id} has no role ${id}`);
   return role;
+}
+
+/** The credential names a role may use: `grants`, else the legacy `credentials` list. */
+export function roleGrants(role: Pick<Role, "grants" | "credentials">): string[] {
+  return role.grants ?? role.credentials;
 }

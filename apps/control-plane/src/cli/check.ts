@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import type { CredentialSpec } from "@ai-employee/core";
+import { providerFor } from "../credentials/index.js";
 import { resolveEffectiveConfig, type ResolveOptions } from "./resolve.js";
 
 export interface CheckOptions extends ResolveOptions {
@@ -7,7 +9,7 @@ export interface CheckOptions extends ResolveOptions {
 }
 
 type Role = { credentials: string[]; canSpawn: string[]; canSchedule: string[]; mcpServers: Record<string, unknown>; mcpServersResolvable: string[] };
-type Emp = { defaultRole: string; roles: Record<string, Role>; workstreams: Record<string, { entryRole: string }>; monitors: Record<string, { role: string }> };
+type Emp = { credentials?: Record<string, CredentialSpec>; defaultRole: string; roles: Record<string, Role>; workstreams: Record<string, { entryRole: string }>; monitors: Record<string, { role: string }> };
 
 /** Every problem found, empty when the config is sound. Schema, prompt files and extends errors surface from the loader as one problem. */
 export async function checkConfig(opts: CheckOptions): Promise<string[]> {
@@ -31,6 +33,18 @@ export async function checkConfig(opts: CheckOptions): Promise<string[]> {
       for (const t of r.canSpawn) ref(`role ${rid} canSpawn`, t);
       for (const t of r.canSchedule) ref(`role ${rid} canSchedule`, t);
       // The runtime silently drops an MCP server whose ${VAR} no credential provides; here that is an error.
+      // `credentials` here is the role's grants (an unknown one already fails in resolve).
+      // Two of the role's own logins must not set the same env var.
+      const owner = new Map<string, string>();
+      for (const g of r.credentials) {
+        const spec = e.credentials?.[g];
+        if (!spec) continue;
+        for (const n of providerFor(spec).envNames(spec)) {
+          const prev = owner.get(n);
+          if (prev && prev !== g) problems.push(`${id}: role ${rid} grants "${prev}" and "${g}", which both set ${n}`);
+          owner.set(n, g);
+        }
+      }
       for (const s of Object.keys(r.mcpServers)) {
         if (!r.mcpServersResolvable.includes(s)) problems.push(`${id}: role ${rid} mcp server "${s}" uses \${VAR}s that no credential of the role provides`);
       }
