@@ -72,6 +72,8 @@ export const EmployeeSchema = z.object({
   vars: z.record(z.string()).optional(),
   /** Named logins and how to obtain each (see CredentialSpecSchema). Without it, grants resolve to the built-in env-based ones. */
   credentials: z.record(CredentialSpecSchema).optional(),
+  /** `jobPrefix` replaces CLOUDRUN_JOB_PREFIX for this employee's `imageRef` roles, so each employee can run on its own Cloud Run jobs (and service account). */
+  sandbox: z.object({ jobPrefix: z.string().min(1).optional() }).optional(),
 });
 export type Employee = z.infer<typeof EmployeeSchema>;
 

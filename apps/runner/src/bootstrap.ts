@@ -21,6 +21,26 @@ export function bootstrapTools(env: NodeJS.ProcessEnv, run = spawnSync): string[
     } else notes.push(`az: login failed: ${String(r.stderr ?? "").trim().slice(0, 300) || r.error?.message || "unknown"}`);
   }
 
+  // Federated login: trade this container's own Google identity for an Azure session. No secret is stored anywhere.
+  // The ID token is on az's command line only here, before the harness (and so any agent-run `ps`) exists.
+  if (env.AZURE_FEDERATED_CLIENT_ID && env.AZURE_TENANT_ID && !env.AZURE_CLIENT_SECRET) {
+    const aud = env.AZURE_FEDERATED_AUDIENCE ?? "api://AzureADTokenExchange";
+    const idUrl = `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=${encodeURIComponent(aud)}&format=full`;
+    const t = run("curl", ["-fsS", "-m", "10", "-H", "Metadata-Flavor: Google", idUrl], { encoding: "utf8", timeout: 15_000 });
+    if (t.status !== 0) notes.push(`az: federated token unavailable: ${String(t.stderr ?? "").trim().slice(0, 200)}`);
+    else {
+      const r = run(
+        "az",
+        ["login", "--service-principal", "-u", env.AZURE_FEDERATED_CLIENT_ID, "--tenant", env.AZURE_TENANT_ID, "--federated-token", String(t.stdout).trim(), "--allow-no-subscriptions", "--output", "none"],
+        { env, stdio: ["ignore", "ignore", "pipe"], timeout: 60_000 },
+      );
+      if (r.status === 0) {
+        notes.push("az: logged in via federated credential");
+        if (env.AZURE_SUBSCRIPTION_ID) run("az", ["account", "set", "--subscription", env.AZURE_SUBSCRIPTION_ID], { env, stdio: "ignore" });
+      } else notes.push(`az: federated login failed: ${String(r.stderr ?? "").trim().slice(0, 300)}`);
+    }
+  }
+
   // Token broker (App Service managed-identity protocol): `az login --identity` fetches tokens from it on demand.
   if (env.IDENTITY_ENDPOINT && env.IDENTITY_HEADER && !env.AZURE_CLIENT_SECRET) {
     const r = run("az", ["login", "--identity", "--allow-no-subscriptions", "--output", "none"], { env, stdio: ["ignore", "ignore", "pipe"], timeout: 90_000 });

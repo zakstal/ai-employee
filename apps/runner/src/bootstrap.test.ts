@@ -32,6 +32,24 @@ describe("bootstrapTools", () => {
     expect(notes).toContain("az: logged in via token broker");
     expect(run.mock.calls[0]![1]).toEqual(["login", "--identity", "--allow-no-subscriptions", "--output", "none"]);
   });
+  it("logs into azure with the federated token when AZURE_FEDERATED_CLIENT_ID is set", () => {
+    const run = vi.fn().mockReturnValueOnce({ status: 0, stdout: "google.id.token\n", stderr: "" }).mockReturnValue({ status: 0, stderr: "" });
+    const notes = bootstrapTools({ AZURE_FEDERATED_CLIENT_ID: "cid", AZURE_TENANT_ID: "t", AZURE_SUBSCRIPTION_ID: "sub" }, run as never);
+    expect(notes).toEqual(["az: logged in via federated credential"]);
+    expect(run.mock.calls[0]![0]).toBe("curl");
+    expect(run.mock.calls[0]![1]).toContain("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=api%3A%2F%2FAzureADTokenExchange&format=full");
+    expect(run.mock.calls[1]![1]).toEqual(["login", "--service-principal", "-u", "cid", "--tenant", "t", "--federated-token", "google.id.token", "--allow-no-subscriptions", "--output", "none"]);
+    expect(run.mock.calls[2]![1]).toEqual(["account", "set", "--subscription", "sub"]);
+  });
+  it("federated login reports failure without throwing, and is skipped when AZURE_CLIENT_SECRET is set", () => {
+    const noToken = vi.fn().mockReturnValue({ status: 22, stdout: "", stderr: "not on gcp" });
+    expect(bootstrapTools({ AZURE_FEDERATED_CLIENT_ID: "c", AZURE_TENANT_ID: "t" }, noToken as never)[0]).toMatch(/federated token unavailable: not on gcp/);
+    const badLogin = vi.fn().mockReturnValueOnce({ status: 0, stdout: "tok", stderr: "" }).mockReturnValue({ status: 1, stderr: "AADSTS70021" });
+    expect(bootstrapTools({ AZURE_FEDERATED_CLIENT_ID: "c", AZURE_TENANT_ID: "t" }, badLogin as never)[0]).toMatch(/federated login failed: AADSTS70021/);
+    const skipped = vi.fn().mockReturnValue({ status: 0, stderr: "" });
+    expect(bootstrapTools({ AZURE_FEDERATED_CLIENT_ID: "c", AZURE_TENANT_ID: "t", AZURE_CLIENT_SECRET: "s", AZURE_CLIENT_ID: "x" }, skipped as never)).toEqual(["az: logged in as service principal"]);
+    expect(skipped.mock.calls.some((c) => c[0] === "curl")).toBe(false);
+  });
   it("reports failure without throwing", () => {
     const run = vi.fn().mockReturnValue({ status: 1, stderr: Buffer.from("bad creds") });
     expect(bootstrapTools({ AZURE_CLIENT_ID: "id", AZURE_TENANT_ID: "t", AZURE_CLIENT_SECRET: "s" }, run as never)[0]).toMatch(/az: login failed: bad creds/);

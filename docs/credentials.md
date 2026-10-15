@@ -63,3 +63,46 @@ Limits to know:
 - Installation tokens last exactly one hour and cannot be extended. A run longer than that loses `git` and `gh` unless the token is refreshed (a later change); keep such roles on a `secret` token meanwhile.
 - GitHub Packages' npm registry has historically not accepted installation tokens. If `npm install` of a private `@scope` package fails, keep a separate `secret` login that sets only `NPM_GITHUB_TOKEN` and list `env: [GH_TOKEN]` on the app login.
 - App tokens cannot call `gh api user`; use `gh api repos/<owner>/<repo>` to test.
+
+## Azure without a secret (`federated`)
+
+```yaml
+credentials:
+  azure-read:
+    kind: federated
+    provider: azure
+    tenantId: "<tenant guid>"
+    clientId: "<app registration client id>"      # not a secret
+    subscriptionId: "<subscription guid>"          # optional
+    audience: api://AzureADTokenExchange           # default
+    exchange: runner                               # default. control-plane: used by monitors, sets nothing in a run
+```
+
+The sandbox asks the Google metadata server for an ID token for its own service account (with `audience`) and trades it at Entra for an Azure session (`az login --federated-token`, done by the runner before the agent starts). No secret is stored anywhere. It works where the metadata server is reachable: Cloud Run jobs, and the warm runner on a GCP VM.
+
+One-time Azure setup (needs Entra Application Developer or higher, and Owner or User Access Administrator on the subscription):
+
+```bash
+az login
+SUB=<subscription guid>
+TENANT=$(az account show --query tenantId -o tsv)
+APP_ID=$(az ad app create --display-name "ai-employee" --sign-in-audience AzureADMyOrg --query appId -o tsv)
+az ad sp create --id $APP_ID
+# subject = the numeric unique id of each GCP service account that will ask for the token (not its email)
+SA_ID=$(gcloud iam service-accounts describe <runner-sa-email> --format='value(uniqueId)')
+az ad app federated-credential create --id $APP_ID --parameters '{
+  "name": "gcp-runner-sa", "issuer": "https://accounts.google.com", "subject": "'"$SA_ID"'",
+  "audiences": ["api://AzureADTokenExchange"]}'
+az role assignment create --assignee $APP_ID --role "Reader" --scope /subscriptions/$SUB
+az role assignment create --assignee $APP_ID --role "Monitoring Reader" --scope /subscriptions/$SUB
+```
+
+`clientId` and `tenantId` go in the employee file. Federated credentials take a few minutes to become usable. To see what Azure sees, run this from inside a runner and compare `iss`, `sub`, `aud` with the credential:
+
+```bash
+curl -s -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=api://AzureADTokenExchange&format=full'
+```
+
+Isolation: the Google token proves "this is service account X", not "this is employee Y". Employees that share a service account (everything on the shared warm runner, or on one Cloud Run job) can present each other's tokens to any app registration that trusts that account. For real separation give each employee its own Cloud Run jobs and service account (an `extra_runner_images` entry with its own `service_account`), set `sandbox: { jobPrefix: <employee> }` in the employee file so `imageRef` roles use those jobs, and add one federated credential per service account on that employee's app registration.
+
+Azure access tokens from `--federated-token` last about an hour and `az` cannot refresh them. Roles that run longer need a re-login (a later change) or another login kind.
