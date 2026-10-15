@@ -57,6 +57,8 @@ export const MonitorSchema = z.object({
   role: z.string().min(1),
   description: z.string().default(""),
   config: z.record(z.unknown()).default({}),
+  /** Name of one of the employee's `credentials` (kind `broker` or `federated`) the azure-errors collector signs in with. Without it the collector reads the global AZURE_* env. */
+  credential: z.string().optional(),
 });
 export type Monitor = z.infer<typeof MonitorSchema>;
 

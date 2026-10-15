@@ -78,3 +78,12 @@ describe("secret provider", () => {
     expect(await resolveGrantEnv(ctx(e), ["github"])).toEqual({ GH_TOKEN: "mine" });
   });
 });
+
+describe("broker provider", () => {
+  it("emits the App Service MSI variables with the employee's own key", async () => {
+    const e = EmployeeSchema.parse({ id: "e", name: "E", defaultRole: "r", roles: [{ id: "r" }], credentials: { u: { kind: "broker", provider: "azure", url: "http://azbroker:8081", secret: { secret: "k" }, tenantId: "t" } } });
+    const env = await resolveGrantEnv(ctx(e, { k: "key" }), ["u"]);
+    expect(env).toEqual({ IDENTITY_ENDPOINT: "http://azbroker:8081/token", IDENTITY_HEADER: "key", MSI_ENDPOINT: "http://azbroker:8081/token", MSI_SECRET: "key", AZURE_TENANT_ID: "t" });
+    await expect(resolveGrantEnv(ctx(e), ["u"])).rejects.toThrow('secret "k"');
+  });
+});
