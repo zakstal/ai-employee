@@ -3,14 +3,18 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { checkConfig } from "./check.js";
 import { resolveEffectiveConfig } from "./resolve.js";
+import { simulateBacklog } from "./backlogs.js";
 
 const USAGE = `usage: config resolve [--dir <config dir>]... [--out <dir>] [--prompts full] [--sandbox-runtime k8s|local|cloudrun|warm]
                       [--manager-role <id>] [--live-env-names <file>] [--env KEY=VALUE]... [--live-url <url> [--token-env VAR]]
+       config backlogs simulate <employee> <backlog> [--dir <config dir>]... [--token-env VAR]
        config check   [--dir <config dir>]... [--manager-role <id>] [--sandbox-runtime ...] [--public --deny-file <file>]
 --env sets a non-secret control-plane setting for the dump (RUNNER_IMAGES, CLOUDRUN_JOB_PREFIX, ...), repeatable.
 --live-url (resolve) adds each employee's runtime-created schedules from a running control plane (token read from env var --token-env).
 resolve prints the effective configuration as JSON (no secret values). With --out, it writes config.json
 (and prompts/<employee>.<role>.md with --prompts full) instead.
+backlogs simulate prints the state the manager would see for a backlog (read-only; the source is read with the token in env var VAR,
+default GH_TOKEN; ClickUp lists use CLICKUP_API_TOKEN; no task history, so nothing is running).
 check validates the config (schema, prompt files, extends, role references, MCP credentials) and exits 1 on any
 problem. With --public it also scans everything loaded against a deny list (plain words or "re:<regex>" lines).`;
 
@@ -32,6 +36,14 @@ async function main(): Promise<void> {
     },
   });
   const cmd = positionals[0];
+  if (cmd === "backlogs") {
+    if (positionals[1] !== "simulate" || !positionals[2] || !positionals[3]) {
+      console.error(USAGE);
+      process.exit(2);
+    }
+    const dirs = (v.dir?.length ? v.dir : [process.env.ROLES_DIR ?? "roles"]).map((d) => path.resolve(d));
+    return void console.log(await simulateBacklog(dirs, positionals[2], positionals[3], process.env[v["token-env"] ?? "GH_TOKEN"]));
+  }
   if (cmd !== "resolve" && cmd !== "check") {
     console.error(USAGE);
     process.exit(2);

@@ -418,6 +418,21 @@ describe("ai_employee MCP tools", () => {
     }
   }, 20_000);
 
+  it("spawn_agent forwards backlog and item for a manager dispatch", async () => {
+    const cp = await fakeControlPlane((_req, res) => {
+      res.writeHead(201, { "content-type": "application/json" });
+      res.end(JSON.stringify({ agentId: "ag_2", role: "implement", status: "queued" }));
+    });
+    const { client, close } = await connectClient(cp.port);
+    try {
+      await client.callTool({ name: "spawn_agent", arguments: { role: "implement", brief: "notes", backlog: "bl", item: "button" } });
+      expect(cp.requests[0]?.body).toEqual({ role: "implement", brief: "notes", backlog: "bl", item: "button" });
+    } finally {
+      await close();
+      await cp.close();
+    }
+  }, 20_000);
+
   it("surfaces a control-plane 403 from spawn_agent as isError with the error text", async () => {
     const cp = await fakeControlPlane((_req, res) => {
       res.writeHead(403, { "content-type": "application/json" });

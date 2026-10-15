@@ -44,3 +44,6 @@ export function legacyEnv(grant: string, config: Config): Record<string, string>
   }
   return out;
 }
+
+const BUILTIN_GRANTS = ["anthropic", "claude-subscription", "clickup", "github", "azure", "azure-user", "vertex"];
+export const isBuiltinGrant = (name: string): boolean => BUILTIN_GRANTS.includes(name);

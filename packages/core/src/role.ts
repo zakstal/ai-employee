@@ -81,6 +81,49 @@ export const ScheduleSchema = z
   .refine((s) => Number(!!s.prompt) + Number(!!s.promptFile) === 1, { message: "exactly one of prompt or promptFile is required" });
 export type ScheduleConfig = z.infer<typeof ScheduleSchema>;
 
+/**
+ * Backlog = a list of work items the manager role dispatches from, with limits the system enforces.
+ * The manager reads it from here (rendered into its prompt with the computed state) instead of from prose.
+ */
+export const BacklogSchema = z.object({
+  description: z.string().default(""),
+  /** false: the manager is told it is disabled and dispatch for it is refused (409). */
+  enabled: z.boolean().default(true),
+  source: z.discriminatedUnion("kind", [
+    /** A markdown task list in a repo: `## Phase N` headings and `- [ ] item <!-- depends: other -->` lines. */
+    z.object({ kind: z.literal("repo-file"), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "repo must be owner/name"), ref: z.string().default("main"), path: z.string().min(1) }),
+    /** Tasks of a ClickUp list; an item is done when its status is one of `doneStatuses`. */
+    z.object({ kind: z.literal("clickup-list"), listId: z.string().min(1), doneStatuses: z.array(z.string()).default(["complete", "closed", "done"]) }),
+  ]),
+  /** Employee credential (or built-in grant) the control plane itself reads the source and PR state with. */
+  credential: z.string().default("github"),
+  /** `file`: file order. `phase`: by phase number, then file order. */
+  order: z.enum(["file", "phase"]).default("file"),
+  /** `merged`: phase N+1 waits until every item of earlier phases is merged. */
+  phaseGate: z.enum(["none", "merged"]).default("none"),
+  /** Role the manager spawns for an item, and the brief template ({{item}} {{backlog}} {{branch}} {{base}}, filled at dispatch). */
+  dispatch: z.object({ role: z.string().min(1), brief: z.string().min(1) }),
+  concurrency: z.number().int().min(1).max(10).default(1),
+  done: z
+    .object({
+      /** repo-file sources only; a clickup-list item is done by its status. */
+      rule: z.enum(["pr-open", "pr-merged", "branch-pushed"]).default("pr-open"),
+      /** Base branch of the item's PR (default: the source ref). */
+      base: z.string().optional(),
+      branchPattern: z.string().default("ai/{{backlog}}/{{item}}"),
+    })
+    .default({}),
+  guards: z
+    .object({
+      maxTasksPerDay: z.number().int().positive().optional(),
+      maxCostUsdPerDay: z.number().positive().optional(),
+      maxAttemptsPerItem: z.number().int().positive().default(2),
+      stopAfterConsecutiveFailures: z.number().int().positive().default(3),
+    })
+    .default({}),
+});
+export type Backlog = z.infer<typeof BacklogSchema>;
+
 export const EmployeeSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -89,6 +132,8 @@ export const EmployeeSchema = z.object({
   /** Named entry points for POST /agents { workstream }, resolving to a starting role. */
   workstreams: z.record(z.object({ entryRole: z.string().min(1), description: z.string().optional() })).default({}),
   monitors: z.record(MonitorSchema).default({}),
+  /** Backlogs the manager works through (see BacklogSchema). */
+  backlogs: z.record(BacklogSchema).optional(),
   /** Cron schedules defined in config, reconciled into the database at boot (see ScheduleSchema). */
   schedules: z.record(ScheduleSchema).optional(),
   /** Values for `{{NAME}}` in prompts. Built in: BOT_NAME, EMPLOYEE_ID, PR_SIGNATURE. */

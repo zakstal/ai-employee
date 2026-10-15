@@ -356,6 +356,16 @@ export class Ledger {
     return r.rows;
   }
 
+  // ---- backlogs
+  /** Tasks the manager dispatched for a backlog, oldest first. */
+  async tasksByBacklog(employeeId: string, backlogId: string): Promise<{ id: string; status: TaskStatus; item: string | null; text: string | null; createdAt: Date }[]> {
+    const r = await this.db.query<{ id: string; status: TaskStatus; item: string | null; text: string | null; created_at: Date }>(
+      "SELECT id, status, source->>'backlogItem' AS item, result->>'text' AS text, created_at FROM tasks WHERE employee_id = $1 AND source->>'backlogId' = $2 ORDER BY created_at",
+      [employeeId, backlogId],
+    );
+    return r.rows.map((x) => ({ id: x.id, status: x.status, item: x.item, text: x.text, createdAt: x.created_at }));
+  }
+
   // ---- manager wakes
   /** Called when a backlog task finishes. Coalesces: many completions before the next run = one wake. */
   async requestManagerWake(employeeId: string, reason: string): Promise<void> {

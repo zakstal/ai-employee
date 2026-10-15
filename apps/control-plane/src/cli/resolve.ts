@@ -66,7 +66,7 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
   for (const e of [...employees.values()].sort((a, b) => a.id.localeCompare(b.id))) {
     const roles: Record<string, unknown> = {};
     for (const role of e.roles) {
-      const prompt = `${role.systemPrompt.trimEnd()}\n\n${environmentFooter(role, e)}`;
+      const prompt = `${role.systemPrompt.trimEnd()}\n\n${environmentFooter(role, e, base.MANAGER_ROLE)}`;
       prompts[`${e.id}.${role.id}`] = prompt;
       roles[role.id] = withEnv(procEnv, () => describeRole(e, role, config, registered, jobs, prompt));
     }
@@ -75,6 +75,7 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
       name: e.name, defaultRole: e.defaultRole, workstreams: e.workstreams, monitors: e.monitors,
       ...(e.credentials ? { credentials: e.credentials } : {}), ...(e.sandbox ? { sandbox: e.sandbox } : {}),
       ...(e.schedules ? { schedulesInConfig: schedules } : {}),
+      ...(e.backlogs ? { backlogs: e.backlogs } : {}),
       ...(opts.liveUrl ? { schedulesRuntime: await liveRuntimeSchedules(opts, e.id) } : {}),
       roles,
     };

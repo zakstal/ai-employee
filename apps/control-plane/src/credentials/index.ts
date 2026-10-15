@@ -10,7 +10,7 @@ import type { CredentialContext, CredentialProvider } from "./types.js";
 
 export * from "./types.js";
 export { EnvSecretStore, GcpSecretStore } from "./secret-store.js";
-export { legacyEnv } from "./legacy.js";
+export { isBuiltinGrant, legacyEnv } from "./legacy.js";
 
 /** kind -> provider. Providers import only `types.ts`, so this file can list them without a cycle. */
 const providers = new Map<string, CredentialProvider>(

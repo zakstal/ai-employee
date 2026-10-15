@@ -69,6 +69,7 @@ loaded employee ids.
 | `workstreams` | map | no | See [Workstreams](#workstreams). |
 | `monitors` | map | no | See [Monitors](#monitors). |
 | `schedules` | map | no | Cron entries kept in the file. See [Schedules](#schedules). |
+| `backlogs` | map | no | Work lists the manager dispatches from. See [Manager and backlogs](#manager-and-backlogs). |
 
 ## Roles
 
@@ -318,14 +319,57 @@ The daily digest is separate: if `ALERT_CHANNEL_ID` is set, the control plane po
 Set `MANAGER_ROLE` (for example `manager`) in the environment to turn the manager on. Mechanics:
 
 - A root task started with `managedBy` (`POST /tasks {"managedBy":"manager",...}`) counts as backlog work. When it ends, a wake is recorded.
-  Child tasks (`spawn_agent`, workstream stages) never record one, and `spawn_agent` has no `managedBy` option.
+  Child tasks (`spawn_agent`, workstream stages) never record one, except a child the manager spawns for a configured backlog item (see `backlogs:`).
 - The tick runs the manager role at most once per `MANAGER_DEBOUNCE_SEC` (300). With `MANAGER_HEARTBEAT_MIN` (60) it also runs after that many
   quiet minutes, so a stall is noticed; a heartbeat that finds nothing to do replies `IDLE` and posts nothing. `0` disables the heartbeat.
 - The manager role needs `capabilities: [agents, backlog]` and `canSpawn` for the roles it dispatches. Its output goes to `ALERT_CHANNEL_ID`.
 - The wake runs for **every** employee with the role id in `MANAGER_ROLE`; an employee without such a role gets failing manager tasks. Give each employee a role with that id, or leave
   `MANAGER_ROLE` unset.
-- A backlog is not a schema field. `manager.md` says backlogs are "defined in your role config", but the loader ignores unknown keys, so
-  describe each backlog (where the list lives, what "done" means, which role to dispatch, concurrency) in the manager's prompt text.
+- Backlogs are declared in the employee file under `backlogs:` (below). Backlogs written as prose in the manager's prompt still work, but get
+  none of the checks or limits.
+
+### `backlogs:`
+
+```yaml
+backlogs:
+  tailwind-rewrite:
+    description: "one component per task"
+    enabled: true                      # false: shown to the manager as disabled; dispatch is refused (409 "guard: disabled")
+    source:                            # repo-file | clickup-list
+      kind: repo-file
+      repo: owner/name
+      ref: main                        # branch the list is read from
+      path: docs/TASKS.md
+    credential: github                 # login the control plane reads the source and PRs with (default github)
+    order: phase                       # file | phase
+    phaseGate: none                    # none | merged: phase N+1 waits until every earlier item is merged
+    dispatch:
+      role: implement                  # role spawned for an item; must be in the manager's canSpawn
+      brief: |                         # {{item}} {{backlog}} {{branch}} {{base}}, filled when dispatching
+        Do `{{item}}` on branch `{{branch}}`; open a PR into `{{base}}`.
+    concurrency: 3
+    done: { rule: pr-open, base: main, branchPattern: "ai/{{backlog}}/{{item}}" }   # pr-open | pr-merged | branch-pushed
+    guards:                            # enforced server-side
+      maxTasksPerDay: 12
+      maxCostUsdPerDay: 60
+      maxAttemptsPerItem: 2
+      stopAfterConsecutiveFailures: 3
+```
+
+- **repo-file** source: a markdown task list. `## Phase N` headings set the phase; `- [ ] Name` is an item (`- [x]` is done);
+  `<!-- depends: A, B -->` after the name lists items it waits for. The item id is the lower-case slug of the name (`Date Picker` is
+  `date-picker`) and names the branch via `branchPattern`.
+- **clickup-list** source: each task of the list is an item (id = task id); done when its status is in `doneStatuses`
+  (default `complete`, `closed`, `done`). The done rule does not apply.
+- Item status, computed by the system on every manager run and shown to it: `done` (checkbox or done rule), `running` (a task in
+  flight), `stopped` (`maxAttemptsPerItem` attempts, last failure kept), `blocked` (a dependency or the phase gate), else `ready`.
+  `freeSlots` = `concurrency` minus running tasks.
+- The manager dispatches with `spawn_agent(role, brief, backlog, item)`. Only the manager role may; the role must be the backlog's
+  `dispatch.role`. The system puts the filled brief template before the manager's `brief`, marks the child with `managedBy`/`backlogId`/`backlogItem`,
+  and **the child finishing wakes the manager** (debounced, as for `POST /tasks {managedBy}`). Ordinary children still do not.
+- `config check` validates the dispatch role, the credential and that the manager can spawn the role. `config resolve` lists `backlogs`.
+  `config backlogs simulate <employee> <backlog>` prints the state the manager would see, read-only, with the token in `GH_TOKEN`
+  (or `--token-env`), so a list can be rehearsed against the real file.
 
 ## dev.yaml explained
 

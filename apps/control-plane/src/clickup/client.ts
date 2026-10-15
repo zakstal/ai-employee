@@ -15,6 +15,8 @@ export interface ChatMessage {
 
 export interface ClickUpClient {
   getTask(taskId: string): Promise<ClickUpTask>;
+  /** Every task of a list, closed ones included (paged). */
+  listTasks(listId: string): Promise<ClickUpTask[]>;
   postComment(taskId: string, text: string): Promise<string>;
   /** v3 Chat (experimental API). Newest first as returned by ClickUp. */
   getChannelMessages(workspaceId: string, channelId: string, limit: number): Promise<ChatMessage[]>;
@@ -42,6 +44,16 @@ export class HttpClickUpClient implements ClickUpClient {
 
   getTask(taskId: string): Promise<ClickUpTask> {
     return this.call<ClickUpTask>(`/task/${encodeURIComponent(taskId)}`);
+  }
+
+  async listTasks(listId: string): Promise<ClickUpTask[]> {
+    const out: ClickUpTask[] = [];
+    for (let page = 0; page < 20; page++) {
+      const r = await this.call<{ tasks?: ClickUpTask[]; last_page?: boolean }>(`/list/${encodeURIComponent(listId)}/task?include_closed=true&subtasks=true&page=${page}`);
+      out.push(...(r.tasks ?? []));
+      if (r.last_page !== false) break; // ClickUp sets last_page on the final page
+    }
+    return out;
   }
 
   async postComment(taskId: string, text: string): Promise<string> {
@@ -108,6 +120,10 @@ export class NoopClickUpClient implements ClickUpClient {
   private n = 0;
   async getTask(taskId: string): Promise<ClickUpTask> {
     return this.tasks.get(taskId) ?? { id: taskId, name: `Task ${taskId}` };
+  }
+  listed = new Map<string, ClickUpTask[]>();
+  async listTasks(listId: string): Promise<ClickUpTask[]> {
+    return this.listed.get(listId) ?? [];
   }
   async postComment(taskId: string, text: string): Promise<string> {
     const id = `c${++this.n}`;

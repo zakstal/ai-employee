@@ -14,7 +14,8 @@ export function shouldWake(input: TaskInput): boolean {
   const { config } = deps();
   if (!config.MANAGER_ROLE) return false;
   if (!input.source.managedBy) return false;
-  if (input.source.channel === "child") return false; // a stage finishing is the foreman's business, not the manager's
+  // A stage finishing is the foreman's business, not the manager's; a child the manager spawned for a backlog item is the exception.
+  if (input.source.channel === "child" && !input.source.backlogId) return false;
   if (input.roleId === config.MANAGER_ROLE) return false; // never react to itself
   return true;
 }

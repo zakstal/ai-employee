@@ -10,7 +10,8 @@ import pg from "pg";
 import { generateKeyPairSync } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { LocalProcessRuntime } from "@ai-employee/adapters";
-import type { Employee, RunSpec } from "@ai-employee/core";
+import { BacklogSchema, type Employee, type ResultEvent, type RunExit, type RunSpec } from "@ai-employee/core";
+import { claim as claimManager } from "../manager/tick.js";
 import { loadConfig } from "../config.js";
 import { Ledger } from "../db/ledger.js";
 import { buildServer } from "../http/server.js";
@@ -20,7 +21,7 @@ import { fireDueSchedules } from "../schedules/tick.js";
 import { resetTestDatabases, TEST_DB_URL, TEST_DBOS_URL } from "../test-support.js";
 import { EnvSecretStore } from "../credentials/index.js";
 import { deps, setWorkflowDeps } from "./deps.js";
-import { buildRunSpec } from "./steps.js";
+import { buildRunSpec, postResult } from "./steps.js";
 import { DbosOrchestrator } from "./dbos-orchestrator.js";
 
 const employee: Employee = {
@@ -31,6 +32,10 @@ const employee: Employee = {
     vault: { kind: "secret", env: { SENTINEL_ENV: { secret: "sentinel" } } },
     gh: { kind: "minted", provider: "github-app", appId: "1", installationId: "2", privateKey: { secret: "appkey" }, permissions: { contents: "read" }, env: ["GH_TOKEN", "NPM_GITHUB_TOKEN"] },
   },
+  backlogs: {
+    bl: BacklogSchema.parse({ source: { kind: "clickup-list", listId: "L1" }, dispatch: { role: "ops", brief: "Do {{item}} on {{branch}}" }, concurrency: 2, done: { branchPattern: "ai/{{backlog}}/{{item}}" } }),
+    off: BacklogSchema.parse({ enabled: false, source: { kind: "clickup-list", listId: "L2" }, dispatch: { role: "ops", brief: "x" } }),
+  },
   workstreams: { sdlc: { entryRole: "assistant", description: "test workstream" } },
   monitors: {
     "support-watch": { collector: "clickup-channels", everyMin: 5, role: "ops", description: "test watcher", config: { channels: [{ id: "sup-1", name: "us-support" }] } },
@@ -40,6 +45,11 @@ const employee: Employee = {
       id: "assistant", description: "", systemPrompt: "be brief", allowedTools: ["Read"], disallowedTools: [], mcpServers: {},
       maxTurns: 5, runtime: "k8s", cpu: 1, memoryMb: 256, timeoutSec: 20, credentials: [], repos: [],
       capabilities: ["schedules", "agents", "monitors"], canSchedule: ["ops"], canSpawn: ["ops", "assistant"],
+    },
+    {
+      id: "manager", description: "", systemPrompt: "manage", allowedTools: ["Read"], disallowedTools: [], mcpServers: {},
+      maxTurns: 5, runtime: "k8s", cpu: 1, memoryMb: 256, timeoutSec: 20, credentials: [], repos: [],
+      capabilities: ["agents", "backlog"], canSchedule: [], canSpawn: ["ops", "assistant"],
     },
     {
       id: "vault", description: "", systemPrompt: "be brief", allowedTools: ["Read"], disallowedTools: [], mcpServers: {},
@@ -93,7 +103,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
     slack = new NoopSlackClient();
     clickup = new NoopClickUpClient();
     const employees = new Map([[employee.id, employee]]);
-    const config = loadConfig({ DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, SANDBOX_RUNTIME: "local", PUBLIC_BASE_URL: "http://127.0.0.1:1" });
+    const config = loadConfig({ DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, SANDBOX_RUNTIME: "local", PUBLIC_BASE_URL: "http://127.0.0.1:1", MANAGER_ROLE: "manager", MANAGER_HEARTBEAT_MIN: "0" });
     const runtimes = { local: new LocalProcessRuntime(fakeRunnerCommand) };
 
     const orchestrator = new DbosOrchestrator(ledger);
@@ -655,6 +665,87 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       expect(after!.question).toBeNull();
       expect(after!.answer).toBeNull();
     }, 30_000);
+  });
+
+  describe("backlog children (manager-dispatched, wake the manager)", () => {
+    async function managerAuth() {
+      const res = await app.inject({ method: "POST", url: "/tasks", payload: { employeeId: "dev", roleId: "manager", prompt: "noop", taskKey: randomUUID() } });
+      const { taskId } = res.json() as { taskId: string };
+      return { taskId, headers: { authorization: `Bearer ${await ledger.issueRunToken(taskId, 600)}`, "x-task-id": taskId } };
+    }
+    const dispatch = (headers: Record<string, string>, payload: Record<string, unknown>) => app.inject({ method: "POST", url: "/agents", headers, payload });
+
+    it("a backlog child carries managedBy/backlogId, gets the filled brief, and finishing it wakes the manager", async () => {
+      await claimManager("dev", new Date(Date.now() + 86_400_000)); // drain anything pending from earlier tests
+      const { headers } = await managerAuth();
+      const res = await dispatch(headers, { role: "ops", brief: "mind the lint", backlog: "bl", item: "button" });
+      expect(res.statusCode).toBe(201);
+      const { agentId } = res.json() as { agentId: string };
+      const t = await waitFor(agentId, ["done", "failed"]);
+      expect(t.source).toMatchObject({ channel: "child", managedBy: "manager", backlogId: "bl", backlogItem: "button" });
+      expect(t.prompt).toBe("Do button on ai/bl/button\n\nManager notes:\nmind the lint");
+      const woke = await claimManager("dev", new Date(Date.now() + 2 * 86_400_000));
+      expect(woke?.input.roleId).toBe("manager");
+      expect(woke?.input.prompt).toContain(agentId);
+    }, 30_000);
+
+    it("an ordinary child still does not wake the manager", async () => {
+      await claimManager("dev", new Date(Date.now() + 3 * 86_400_000)); // drain
+      const { headers } = await managerAuth();
+      const { agentId } = (await dispatch(headers, { role: "ops", brief: "plain" })).json() as { agentId: string };
+      await waitFor(agentId, ["done", "failed"]);
+      expect(await claimManager("dev", new Date(Date.now() + 4 * 86_400_000))).toBeUndefined();
+    }, 30_000);
+
+    it("403 from a non-manager role, 400 for another role or an unknown backlog or half a pair, 409 for a disabled backlog", async () => {
+      const normal = await app.inject({ method: "POST", url: "/tasks", payload: { employeeId: "dev", roleId: "assistant", prompt: "noop", taskKey: randomUUID() } });
+      const nid = (normal.json() as { taskId: string }).taskId;
+      const nHeaders = { authorization: `Bearer ${await ledger.issueRunToken(nid, 600)}`, "x-task-id": nid };
+      expect((await dispatch(nHeaders, { role: "ops", brief: "x", backlog: "bl", item: "a" })).statusCode).toBe(403);
+      const { headers } = await managerAuth();
+      expect((await dispatch(headers, { role: "assistant", brief: "x", backlog: "bl", item: "a" })).statusCode).toBe(400);
+      expect((await dispatch(headers, { role: "ops", brief: "x", backlog: "nope", item: "a" })).statusCode).toBe(400);
+      expect((await dispatch(headers, { role: "ops", brief: "x", backlog: "bl" })).statusCode).toBe(400);
+      const off = await dispatch(headers, { role: "ops", brief: "x", backlog: "off", item: "a" });
+      expect(off.statusCode).toBe(409);
+      expect((off.json() as { error: string }).error).toBe("guard: disabled");
+    });
+
+    it("no orphan relay for a backlog child whose manager run has finished (an ordinary orphan still relays)", async () => {
+      const rootId = `root-${randomUUID()}`;
+      await ledger.createTask(rootId, { employeeId: "dev", roleId: "manager", prompt: "p", source: { channel: "clickup-chat", threadRef: "relay-chan" } });
+      await ledger.setStatus(rootId, "done");
+      const child = (extra: object) => ({ employeeId: "dev", roleId: "ops", prompt: "p", source: { channel: "child" as const, parentTaskId: rootId, threadRef: "relay-chan", ...extra } });
+      const exit = { code: 0 } as RunExit;
+      const result = { type: "result", text: "all good", isError: false } as ResultEvent;
+      const before = clickup.chatMessages.length;
+      await postResult("c1", child({ managedBy: "manager", backlogId: "bl", backlogItem: "x" }), exit, result);
+      expect(clickup.chatMessages.length).toBe(before);
+      await postResult("c2", child({}), exit, result);
+      expect(clickup.chatMessages.at(-1)?.text).toContain("Follow-up from ops (c2)");
+    });
+
+    it("an item already running is refused", async () => {
+      const { headers } = await managerAuth();
+      await ledger.createTask(`busy-${randomUUID()}`, { employeeId: "dev", roleId: "ops", prompt: "p", source: { channel: "child", managedBy: "manager", backlogId: "bl", backlogItem: "dup" } });
+      const res = await dispatch(headers, { role: "ops", brief: "again", backlog: "bl", item: "dup" });
+      expect(res.statusCode).toBe(409);
+      expect((res.json() as { error: string }).error).toBe("guard: item dup is already running");
+    });
+
+    it("the manager's run carries the backlogs section and the computed state", async () => {
+      clickup.listed.set("L1", [{ id: "t1", name: "Task one", status: { status: "open" } }, { id: "t2", name: "Task two", status: { status: "complete" } }]);
+      const { taskId } = await managerAuth();
+      const spec = await buildRunSpec(taskId, { employeeId: "dev", roleId: "manager", prompt: "go", source: { channel: "http" } });
+      expect(spec.env.SYSTEM_PROMPT).toContain("## Backlogs (from config)");
+      expect(spec.env.SYSTEM_PROMPT).toContain("### off (DISABLED");
+      expect(spec.env.TASK_PROMPT).toContain("## Backlog state");
+      expect(spec.env.TASK_PROMPT).toMatch(/ready \(in order\):\n {2}- t1 /);
+      expect(spec.env.TASK_PROMPT).toContain("1/2 done");
+      expect(spec.env.TASK_PROMPT).toContain("### off\nState unavailable (disabled in config). Dispatch nothing");
+      const other = await buildRunSpec(taskId, { employeeId: "dev", roleId: "assistant", prompt: "go", source: { channel: "http" } });
+      expect(other.env.TASK_PROMPT).not.toContain("Backlog state");
+    });
   });
 
   describe("monitors (default off, toggled by the agent, model only on new findings)", () => {

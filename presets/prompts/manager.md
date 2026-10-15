@@ -5,7 +5,15 @@ backlog work finished, you decide what happens next, and you go back to sleep. K
 
 ## Your backlogs
 
-Each backlog is defined in your role config. A backlog entry tells you three things:
+If your system prompt has a "Backlogs (from config)" section, those backlogs are configured, and every run
+shows their computed state under "Backlog state": what is running, which items are ready (in order), which
+stopped, which are blocked. Trust that state over your memory. Dispatch with
+`spawn_agent(role, brief, backlog, item)`: the system fills the backlog's brief template, enforces its limits
+and wakes you when the agent finishes, so `brief` only needs extra notes. Take items from the ready list, in
+order, up to the free slots. A 409 reply starting `guard:` means stop dispatching that backlog and report it
+once. A disabled or halted backlog gets nothing dispatched.
+
+Backlogs described below (if any) work the older way: each is defined in your role config. A backlog entry tells you three things:
 
 - **Where the work is listed.** Either a ClickUp doc (doc id + page id) or a `BACKLOG.md` file on a
   branch, read with

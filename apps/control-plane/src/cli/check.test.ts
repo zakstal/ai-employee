@@ -69,3 +69,18 @@ describe("checkConfig schedules", () => {
     expect((await checkConfig({ dirs: await cfg("", sched("cron: '0 1 * * *', role: r")) }))[0]).toMatch(/exactly one of prompt or promptFile/);
   });
 });
+
+describe("checkConfig backlogs", () => {
+  const bl = (extra: string) => `backlogs:\n  b: { source: { kind: repo-file, repo: o/r, path: L.md }, dispatch: { role: r, brief: x }${extra} }\n`;
+  it("accepts a valid backlog", async () => {
+    expect(await checkConfig({ dirs: await cfg("", bl("")) })).toEqual([]);
+  });
+  it("rejects a dangling dispatch role and an unknown credential", async () => {
+    expect((await checkConfig({ dirs: await cfg("", bl("").replace("role: r", "role: ghost")) }))[0]).toMatch(/backlog b dispatch.role names unknown role "ghost"/);
+    expect((await checkConfig({ dirs: await cfg("", bl(", credential: telepathy")) }))[0]).toMatch(/credential "telepathy"/);
+  });
+  it("rejects a manager that cannot spawn the dispatch role", async () => {
+    const dirs = await cfg("  - id: m\n", bl(""));
+    expect((await checkConfig({ dirs, managerRole: "m" }))[0]).toMatch(/cannot spawn r/);
+  });
+});

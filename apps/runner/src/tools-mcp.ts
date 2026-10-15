@@ -181,7 +181,7 @@ server.registerTool(
   },
 );
 
-async function spawn(body: { role?: string; workstream?: string; brief: string }): Promise<CallToolResult> {
+async function spawn(body: { role?: string; workstream?: string; brief: string; backlog?: string; item?: string }): Promise<CallToolResult> {
   try {
     const agent = (await request("POST", "/agents", body)) as Agent;
     return textResult(`Spawned ${agent.role ?? body.workstream ?? "agent"} agent ${agent.agentId}.`);
@@ -272,9 +272,14 @@ server.registerTool(
       "brief: the request, links, findings so far, decisions already made, and what to return. Returns an " +
       "agent id; use wait_for to get the result. Subagents keep their own context; send follow-ups to the " +
       "same agent via spawn_agent again with the previous agent id in the brief.",
-    inputSchema: { role: z.string(), brief: z.string().min(1) },
+    inputSchema: {
+      role: z.string(),
+      brief: z.string().min(1),
+      backlog: z.string().min(1).optional().describe("Manager only: id of the configured backlog this item belongs to. The system adds the backlog's brief template, enforces its limits, and wakes you when the agent finishes."),
+      item: z.string().min(1).optional().describe("Manager only: the backlog item id (from the Backlog state). Needs `backlog`."),
+    },
   },
-  async ({ role, brief }): Promise<CallToolResult> => spawn({ role, brief }),
+  async ({ role, brief, backlog, item }): Promise<CallToolResult> => spawn({ role, brief, ...(backlog ? { backlog } : {}), ...(item ? { item } : {}) }),
 );
 
 server.registerTool(
