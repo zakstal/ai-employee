@@ -92,7 +92,8 @@ export class CloudRunJobRuntime implements SandboxRuntime {
   }
 
   /** `us-central1-docker.pkg.dev/p/r/runner-ops:tag` → `.../jobs/ai-employee-runner-ops`. */
-  jobPathFor(image: string): string {
+  jobPathFor(image: string, jobOverride?: string): string {
+    if (jobOverride) return `${this.jobsParent}/${jobOverride}`;
     if (this.fixedJobName) return `${this.jobsParent}/${this.fixedJobName}`;
     const basename = (image.split("/").pop() ?? image).replace(/[@:].*$/, "");
     // Local images are already named `ai-employee-runner[-ops]`; registry images are `runner[-ops]`.
@@ -101,7 +102,7 @@ export class CloudRunJobRuntime implements SandboxRuntime {
   }
 
   async start(spec: RunSpec): Promise<RunHandle> {
-    const jobPath = this.jobPathFor(spec.image);
+    const jobPath = this.jobPathFor(spec.image, spec.jobName);
     const existing = await this.findActiveExecution(spec.runId, jobPath);
     if (existing?.name) return { adapter: this.name, externalId: existing.name };
 

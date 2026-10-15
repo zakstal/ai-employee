@@ -4,7 +4,7 @@ import { CloudRunJobRuntime } from "@ai-employee/adapters";
 import type { Role } from "@ai-employee/core";
 import { loadConfig, type Config } from "../config.js";
 import { loadEmployees } from "../roles/load.js";
-import { environmentFooter, resolveCredentials, resolvableMcpServers, runtimeFor } from "../orchestration/steps.js";
+import { environmentFooter, resolveCredentials, resolveImage, resolvableMcpServers, runtimeFor } from "../orchestration/steps.js";
 
 export interface ResolveOptions {
   dirs: string[];
@@ -79,7 +79,7 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
 function describeRole(role: Role, config: Config, registered: string[], jobs: CloudRunJobRuntime, prompt: string) {
   const envNames = Object.keys(resolveCredentials(role.credentials, config)).sort();
   const runtimeUsed = runtimeFor(role, config.SANDBOX_RUNTIME, registered);
-  const image = role.image ?? config.RUNNER_IMAGE;
+  const { image, jobName } = resolveImage(role, config);
   return {
     model: role.model ?? null,
     maxTurns: role.maxTurns,
@@ -89,8 +89,9 @@ function describeRole(role: Role, config: Config, registered: string[], jobs: Cl
     runtime: role.runtime,
     runtimeUsed,
     image: role.image ?? null,
+    ...(role.imageRef ? { imageRef: role.imageRef } : {}),
     imageResolved: image,
-    cloudRunJob: runtimeUsed === "cloudrun" ? jobs.jobPathFor(image).split("/").pop() : null,
+    cloudRunJob: runtimeUsed === "cloudrun" ? jobs.jobPathFor(image, jobName).split("/").pop() : null,
     credentials: role.credentials,
     credentialEnvNames: envNames,
     allowedTools: role.allowedTools,

@@ -48,13 +48,22 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
   env.MCP_CONFIG = JSON.stringify({ mcpServers: { ...resolvableMcpServers(role.mcpServers, env), ...builtinServers } });
   return {
     runId: taskId,
-    image: role.image ?? config.RUNNER_IMAGE,
+    ...resolveImage(role, config),
     env,
     cpu: role.cpu,
     memoryMb: role.memoryMb,
     timeoutSec: role.timeoutSec,
     employeeId: employee.id,
   };
+}
+
+/**
+ * Image (and Cloud Run Job) for a role. `imageRef` names a RUNNER_IMAGES entry and the job `${prefix}-${ref}`;
+ * without it the legacy `image` / RUNNER_IMAGE applies and the job name is derived from the image.
+ */
+export function resolveImage(role: Role, config: Config): { image: string; jobName?: string } {
+  if (!role.imageRef) return { image: role.image ?? config.RUNNER_IMAGE };
+  return { image: config.RUNNER_IMAGES[role.imageRef] ?? config.RUNNER_IMAGE, jobName: `${config.CLOUDRUN_JOB_PREFIX}-${role.imageRef}` };
 }
 
 /** Runtime a role runs on: its own if this deployment registered it (k8s is the default tier), else the deployment default. */
