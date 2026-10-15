@@ -19,6 +19,8 @@ export interface RunSpec {
   timeoutSec: number;
   /** Employee id; adapters may map it to a namespace / tenant. */
   employeeId: string;
+  /** Cloud Run Job to run; overrides the job name derived from the image. */
+  jobName?: string;
   /** Override the image entrypoint. Tests only; production runs the image's own entrypoint. */
   command?: string[];
 }

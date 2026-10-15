@@ -166,4 +166,9 @@ describe("CloudRunJobRuntime.jobPathFor", () => {
     expect(rt.jobPathFor("ai-employee-runner-ops:dev")).toBe("projects/p/locations/r/jobs/ai-employee-runner-ops");
     expect(rt.jobPathFor("registry/x/runner@sha256:deadbeef")).toBe("projects/p/locations/r/jobs/ai-employee-runner");
   });
+  it("a jobName override wins over the image basename", async () => {
+    const { CloudRunJobRuntime } = await import("./cloudrun-job.js");
+    const rt = new CloudRunJobRuntime({ projectId: "p", region: "r", client: { jobs: {} as never, executions: {} as never } });
+    expect(rt.jobPathFor("registry/x/runner:abc", "ai-employee-runner-custom")).toBe("projects/p/locations/r/jobs/ai-employee-runner-custom");
+  });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Role } from "@ai-employee/core";
-import { environmentFooter, resolvableMcpServers } from "./steps.js";
+import { loadConfig } from "../config.js";
+import { environmentFooter, resolvableMcpServers, resolveImage } from "./steps.js";
 
 describe("resolvableMcpServers", () => {
   const servers = {
@@ -27,5 +28,22 @@ describe("environmentFooter", () => {
     expect(f).toContain("/workspace: r");
     expect(f).toContain("spawn_agent");
     expect(f).toContain("az *, gh *");
+  });
+});
+
+describe("resolveImage", () => {
+  const cfg = (images = "") => loadConfig({ DATABASE_URL: "x", DBOS_SYSTEM_DATABASE_URL: "x", RUNNER_IMAGE: "base:1", RUNNER_IMAGES: images } as NodeJS.ProcessEnv);
+  const role = (r: Partial<Role>) => r as Role;
+  it("imageRef > image > RUNNER_IMAGE", () => {
+    const c = cfg('{"runner-ops":"ops:2"}');
+    expect(resolveImage(role({ imageRef: "runner-ops", image: "legacy:0" }), c)).toEqual({ image: "ops:2", jobName: "ai-employee-runner-ops" });
+    expect(resolveImage(role({ image: "legacy:0" }), c)).toEqual({ image: "legacy:0" });
+    expect(resolveImage(role({}), c)).toEqual({ image: "base:1" });
+  });
+  it("an imageRef without a RUNNER_IMAGES entry falls back to RUNNER_IMAGE but keeps the job name", () => {
+    expect(resolveImage(role({ imageRef: "x" }), cfg())).toEqual({ image: "base:1", jobName: "ai-employee-x" });
+  });
+  it("rejects a malformed RUNNER_IMAGES", () => {
+    expect(() => cfg("[1]")).toThrow(/RUNNER_IMAGES/);
   });
 });

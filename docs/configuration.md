@@ -68,6 +68,7 @@ A role is a lookup entry: the same trigger and role always produce the same sand
 | `maxTurns` | `50` | Passed as `--max-turns`. A run that hits it ends with a "turn limit" message. |
 | `runtime` | `k8s` | `k8s` means "the deployment's default runtime". `cloudrun` opts this role into Cloud Run jobs. See [Runtimes](#runtimes-image-and-limits). |
 | `image` | `RUNNER_IMAGE` | Runner image for this role. |
+| `imageRef` | none | Key into the `RUNNER_IMAGES` env (a JSON map of key to image). Picks that image and the Cloud Run job `<prefix>-<key>`; wins over `image`. |
 | `cpu` | `1` | vCPU request. Not honoured on Cloud Run. |
 | `memoryMb` | `2048` | Memory in MiB. Not honoured on Cloud Run. |
 | `timeoutSec` | `1800` | Hard time limit for one run. Also sets the run token lifetime (this plus 10 minutes). |
