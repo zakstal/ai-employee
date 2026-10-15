@@ -19,6 +19,8 @@ export const RoleSchema = z.object({
   maxTurns: z.number().int().positive().default(50),
   runtime: z.enum(["k8s", "fake", "namespace", "cloudrun"]).default("k8s"),
   image: z.string().optional(),
+  /** Key into RUNNER_IMAGES (e.g. "runner-ops"): picks the image and the Cloud Run Job `${prefix}-${key}`. Wins over `image`. */
+  imageRef: z.string().optional(),
   /** Honoured by the k8s/warm tiers. On Cloud Run Jobs the Job template's limits win (overrides carry no
    *  resources), so changing these does nothing for a `runtime: cloudrun` role — edit infra/gcp-cloudrun. */
   cpu: z.number().positive().default(1),

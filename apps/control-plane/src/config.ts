@@ -12,6 +12,15 @@ const Env = z.object({
   /** From `claude setup-token` (Pro/Max/Team/Enterprise). One-year OAuth token; shares the subscription's usage limits. */
   CLAUDE_CODE_OAUTH_TOKEN: z.string().default(""),
   RUNNER_IMAGE: z.string().default("ai-employee-runner:dev"),
+  /** JSON map of imageRef -> image, e.g. {"runner-ops":"<registry>/runner-ops:tag"}. Roles pick one with `imageRef`. */
+  RUNNER_IMAGES: z.string().default("").transform((v, ctx) => {
+    try {
+      return z.record(z.string()).parse(v ? JSON.parse(v) : {});
+    } catch {
+      ctx.addIssue({ code: "custom", message: "RUNNER_IMAGES must be a JSON object of strings" });
+      return z.NEVER;
+    }
+  }),
   // ---- static tool credentials, injected per role grant (ponytail: mint short-lived tokens per run later)
   CLICKUP_API_TOKEN: z.string().default(""),
   CLICKUP_TEAM_ID: z.string().default(""),
