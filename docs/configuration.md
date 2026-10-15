@@ -367,6 +367,14 @@ backlogs:
 - The manager dispatches with `spawn_agent(role, brief, backlog, item)`. Only the manager role may; the role must be the backlog's
   `dispatch.role`. The system puts the filled brief template before the manager's `brief`, marks the child with `managedBy`/`backlogId`/`backlogItem`,
   and **the child finishing wakes the manager** (debounced, as for `POST /tasks {managedBy}`). Ordinary children still do not.
+- **Guards** (server-side; dispatch is refused with 409 `guard: ...`): `concurrency` (running tasks of the backlog), `maxTasksPerDay` and
+  `maxCostUsdPerDay` (tasks started and cost reported by finished tasks since local midnight in `DEFAULT_TZ`; cost is the harness's
+  notional USD, so a budget unit rather than a bill; one alert per day when hit), `maxAttemptsPerItem`, a disabled backlog, and a **halted**
+  one. A backlog halts itself, with one chat alert, after `stopAfterConsecutiveFailures` finished tasks in a row failed or were
+  cancelled (a done task resets the streak). It stays halted across restarts until `POST /employees/<id>/backlogs/<backlog>/resume`
+  (failures before the resume no longer count). Running tasks are never killed. State per backlog (running/limit, today's usage, halted and why) is in
+  `GET /employees/<id>/backlogs`, in `GET /runtime` (`backlogs`) and on `/status`; the manager's prompt carries the same numbers.
+  Like `POST /tasks`, the resume route has no login of its own: keep the API behind the IP allowlist.
 - `config check` validates the dispatch role, the credential and that the manager can spawn the role. `config resolve` lists `backlogs`.
   `config backlogs simulate <employee> <backlog>` prints the state the manager would see, read-only, with the token in `GH_TOKEN`
   (or `--token-env`), so a list can be rehearsed against the real file.

@@ -4,6 +4,7 @@ import { deps } from "./deps.js";
 import { requestWake, shouldWake } from "../manager/tick.js";
 import { BOT_MARKER } from "../clickup/chat.js";
 import { backlogPromptState } from "../backlogs/service.js";
+import { afterBacklogTask } from "../backlogs/guards.js";
 import { renderBacklogs } from "../backlogs/render.js";
 import { grantEnvNames, grantPurposes, refreshableGrant, resolveGrantEnv } from "../credentials/index.js";
 
@@ -379,4 +380,6 @@ export async function finalize(taskId: string, exit: RunExit, result: ResultEven
       ...(result?.cacheCreationTokens !== undefined ? { cacheCreationTokens: result.cacheCreationTokens } : {}),
     },
   });
+  // After the status is written, so this task counts in the streak.
+  if (input) await afterBacklogTask({ ledger, config: deps().config, clickup: deps().clickup }, deps().employees, input);
 }

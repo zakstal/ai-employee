@@ -82,6 +82,11 @@ export const STATUS_HTML = `<!doctype html>
   </div>
 </section>
 
+<section id="backlogs-section" hidden>
+  <h2>Backlogs</h2>
+  <ul class="plain" id="backlogs-list"></ul>
+</section>
+
 <section>
   <h2>Task tree</h2>
   <div id="tree"></div>
@@ -292,6 +297,22 @@ export const STATUS_HTML = `<!doctype html>
     });
   }
 
+  function renderBacklogs(rt) {
+    var list = rt.backlogs || [];
+    document.getElementById('backlogs-section').hidden = !list.length;
+    var el = document.getElementById('backlogs-list');
+    el.innerHTML = '';
+    list.forEach(function (b) {
+      var state = !b.enabled ? 'disabled' : b.halted ? 'HALTED: ' + b.haltedReason : 'ok';
+      var tasks = b.today.tasks + (b.limits.maxTasksPerDay ? '/' + b.limits.maxTasksPerDay : '');
+      var cost = '$' + Number(b.today.costUsd).toFixed(2) + (b.limits.maxCostUsdPerDay ? ' of $' + b.limits.maxCostUsdPerDay : '');
+      var li = document.createElement('li');
+      li.innerHTML = '<span class="role">' + escapeHtml(b.employee + '/' + b.id) + '</span> running ' + b.running + '/' + b.concurrency +
+        ' · today ' + escapeHtml(tasks) + ' tasks, ' + escapeHtml(cost) + ' · <span style="color:' + (b.halted ? 'var(--bad)' : 'inherit') + '">' + escapeHtml(state) + '</span>';
+      el.appendChild(li);
+    });
+  }
+
   function renderCountdown() {
     document.getElementById('countdown').textContent = 'refresh in ' + nextIn + 's';
   }
@@ -307,6 +328,7 @@ export const STATUS_HTML = `<!doctype html>
       renderTimeline(rt);
       renderToday(stats);
       renderFailed(rt);
+      renderBacklogs(rt);
     }).catch(function (e) {
       document.getElementById('countdown').textContent = 'fetch error: ' + e.message;
     });

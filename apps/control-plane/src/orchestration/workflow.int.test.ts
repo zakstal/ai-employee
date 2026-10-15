@@ -733,6 +733,30 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       expect((res.json() as { error: string }).error).toBe("guard: item dup is already running");
     });
 
+    it("concurrency is enforced at POST /agents; state is visible at /employees/:id/backlogs and /runtime; resume needs a halt", async () => {
+      const { headers } = await managerAuth();
+      const busy: string[] = [];
+      for (const item of ["c1", "c2"]) {
+        const id = `busy-${randomUUID()}`;
+        busy.push(id);
+        await ledger.createTask(id, { employeeId: "dev", roleId: "ops", prompt: "p", source: { channel: "child", managedBy: "manager", backlogId: "bl", backlogItem: item } });
+      }
+      try {
+        const over = await dispatch(headers, { role: "ops", brief: "x", backlog: "bl", item: "c3" });
+        expect(over.statusCode).toBe(409);
+        expect((over.json() as { error: string }).error).toMatch(/^guard: concurrency \(\d+\/2\)$/);
+        const view = (await app.inject({ method: "GET", url: "/employees/dev/backlogs" })).json() as { backlogs: { id: string; running: number; concurrency: number; halted: boolean; limits: { maxAttemptsPerItem: number } }[] };
+        expect(view.backlogs.find((b) => b.id === "bl")).toMatchObject({ concurrency: 2, halted: false, limits: { maxAttemptsPerItem: 2 } });
+        expect(view.backlogs.find((b) => b.id === "bl")!.running).toBeGreaterThanOrEqual(2);
+        const rt = (await app.inject({ method: "GET", url: "/runtime" })).json() as { backlogs: { employee: string; id: string }[] };
+        expect(rt.backlogs.map((b) => `${b.employee}/${b.id}`)).toContain("dev/bl");
+        expect((await app.inject({ method: "POST", url: "/employees/dev/backlogs/bl/resume" })).statusCode).toBe(409); // not halted
+        expect((await app.inject({ method: "POST", url: "/employees/dev/backlogs/nope/resume" })).statusCode).toBe(404);
+      } finally {
+        for (const id of busy) await ledger.setStatus(id, "done");
+      }
+    });
+
     it("the manager's run carries the backlogs section and the computed state", async () => {
       clickup.listed.set("L1", [{ id: "t1", name: "Task one", status: { status: "open" } }, { id: "t2", name: "Task two", status: { status: "complete" } }]);
       const { taskId } = await managerAuth();
