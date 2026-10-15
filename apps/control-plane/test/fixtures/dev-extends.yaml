@@ -1,0 +1,13 @@
+id: dev
+name: Dev Bot
+defaultRole: developer
+use: [sdlc]
+roles:
+  - id: developer          # same id as the bundle role: patches it
+    +allowedTools: [Bash(git *)]
+    +systemPromptFiles: [prompts/extra.md]
+    -mcpServers: [clickup]
+  - id: reviewer
+    extends: developer
+    maxTurns: 10
+    -allowedTools: [Edit]
