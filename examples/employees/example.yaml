@@ -1,0 +1,22 @@
+# A complete employee on the shipped presets. Copy this folder, change the placeholders, and run
+#   node apps/control-plane/dist/cli/config.js check --dir <your folder> --dir presets
+# CONFIG_DIRS=<your folder>,<presets dir> makes the control plane read the same layout.
+id: dev
+name: Dev Bot
+defaultRole: developer
+use: [sdlc]                       # presets/bundles/sdlc.yaml: the stage roles, their prompts, the sdlc and compound workstreams
+vars:                             # fill {{NAME}} in the preset prompts
+  PR_SIGNATURE: "🤖 Created by Dev Bot"
+  EMPLOYER: "employed by Example Inc"
+  GITHUB_ORG: your-org
+  TRIAGE_REPOS: app, api
+x-repos: &repos
+  - { url: "https://github.com/your-org/app.git" }
+  - { url: "https://github.com/your-org/api.git" }
+roles:                            # same id as a preset role = patch it
+  - { id: developer, repos: *repos }
+  - { id: triage, repos: *repos }
+  - { id: spec, repos: *repos }
+  - { id: implement, repos: *repos }
+  - { id: review, repos: *repos }
+  - { id: compound, repos: *repos }

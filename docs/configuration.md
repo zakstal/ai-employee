@@ -14,6 +14,24 @@ Contents: [minimal example](#minimal-example) · [employee](#employee) · [roles
 [schedules](#schedules) · [manager](#manager-and-backlogs) · [dev.yaml explained](#devyaml-explained) ·
 [how to](#how-to) · [what to redeploy](#what-to-redeploy)
 
+## Presets and your own config folder
+
+The image ships `presets/` (at `/app/presets`): `bundles/sdlc.yaml` (the ten roles of a software-delivery employee and the `sdlc` and
+`compound` workstreams) and `prompts/*.md`. Your configuration lives in a folder of its own and sits first in `CONFIG_DIRS`:
+
+```
+CONFIG_DIRS=/config,/app/presets
+/config/employees/dev.yaml     # the employee: use: [sdlc], vars, repos, monitors, role patches
+/config/roles/*.yaml           # extra roles and workstreams, pulled in with include:
+/config/prompts/*.md           # your prompts; a file with the same path as a preset prompt replaces it
+```
+
+A prompt path resolves in the first folder that has it, so `systemPromptFile: prompts/manager.md` finds yours before the preset's.
+`{{NAME}}` and `{{NAME:-default}}` in prompts are filled from the employee's `vars` (built in: `BOT_NAME`, `EMPLOYEE_ID`, `PR_SIGNATURE`).
+`examples/employees/example.yaml` is a complete employee on the presets. Check a folder with
+`node apps/control-plane/dist/cli/config.js check --dir <folder> --dir presets`, and see what it resolves to with `resolve` (same flags, plus
+`--env KEY=VALUE` for the deployment's non-secret settings such as `RUNNER_IMAGES`).
+
 ## Minimal example
 
 Save as `roles/helper.yaml` (or replace `dev.yaml`). It is valid as written.

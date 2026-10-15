@@ -379,3 +379,19 @@ Use the image in a role with `image: <registry>/runner-custom:TAG`. What happens
   ```
 - **Kubernetes:** the role's `image` is the pod image directly.
 - **Warm runner and local:** `image` is ignored. The warm runner runs whatever image the `runner` container was started with, so to change its tools, point `runner_image` at your derived image.
+
+## Derived control-plane image (private config on the public engine)
+
+Keep your employees, roles and prompts in your own repository and build the control-plane image `FROM` the engine image:
+
+```dockerfile
+ARG ENGINE
+FROM ${ENGINE}                                  # the engine's control-plane image, pinned by tag
+COPY --chown=node:node employees   /config/employees
+COPY --chown=node:node roles       /config/roles
+COPY --chown=node:node prompts     /config/prompts
+ENV CONFIG_DIRS=/config,/app/presets
+```
+
+`CONFIG_DIRS` wins over a `ROLES_DIR` left in the environment by the Terraform stacks, so no stack change is needed. The `--chown` matters: the image runs as `node`.
+Roles that name `imageRef: <key>` need `RUNNER_IMAGES` (a JSON object of key to image) in the control plane's environment (`var.env`).
