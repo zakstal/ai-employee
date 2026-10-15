@@ -82,5 +82,6 @@ describe("live status: GET /runtime, GET /status", () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toContain("text/html");
     expect(res.body).toContain("Slots");
+    expect(res.body).toContain("Backlogs");
   });
 });

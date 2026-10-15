@@ -1,6 +1,7 @@
 import { resolveRole, type Employee } from "@ai-employee/core";
 import { resolveGrantEnv } from "../credentials/index.js";
 import { deps } from "../orchestration/deps.js";
+import { backlogOverview } from "./guards.js";
 import { renderBacklogState } from "./render.js";
 import { readBacklogState, type BacklogState } from "./state.js";
 
@@ -17,12 +18,15 @@ export async function computeBacklogState(employee: Employee, backlogId: string)
 export async function backlogPromptState(employee: Employee): Promise<string> {
   const ids = Object.keys(employee.backlogs ?? {});
   if (!ids.length) return "";
+  const { ledger, config } = deps();
+  const overview = new Map((await backlogOverview({ ledger, config }, employee)).map((o) => [o.id, o]));
   const states = await Promise.all(
     ids.map(async (id) => {
       // A disabled backlog is not read at all (no GitHub calls, no failures for a source that may not exist yet).
       if (!employee.backlogs![id]!.enabled) return { id, error: "disabled in config" };
       try {
-        return { id, state: await computeBacklogState(employee, id) };
+        const o = overview.get(id)!;
+        return { id, state: await computeBacklogState(employee, id), ...(o.halted ? { halted: o.haltedReason ?? "halted" } : {}), today: o.today, limits: o.limits };
       } catch (e) {
         return { id, error: (e as Error).message.slice(0, 200) };
       }

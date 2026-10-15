@@ -10,6 +10,7 @@ import { verifyClickUpSignature } from "../clickup/verify.js";
 import { clickUpTrigger, type ClickUpWebhook } from "../clickup/webhook.js";
 import { chatTrigger, BOT_MARKER } from "../clickup/chat.js";
 import type { ClickUpClient } from "../clickup/client.js";
+import { backlogOverview, checkDispatchGuards } from "../backlogs/guards.js";
 import { briefFor } from "../backlogs/render.js";
 import { fill } from "../backlogs/state.js";
 import { validateCron } from "../schedules/cron.js";
@@ -61,12 +62,6 @@ const CreateScheduleBody = z.object({
 });
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "awaiting_input"]);
-
-/** A `guard: ...` message when dispatch for the backlog must be refused, else undefined. (Limits arrive in the flow-guards change.) */
-async function checkBacklogGuards(_ledger: Ledger, employee: Employee, backlogId: string): Promise<string | undefined> {
-  if (!employee.backlogs?.[backlogId]?.enabled) return "guard: disabled";
-  return undefined;
-}
 
 const MAX_ENABLED_SCHEDULES = 20;
 const MAX_SPAWN_DEPTH = 2;
@@ -268,7 +263,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   app.get("/runtime", async () => {
     const since = new Date(Date.now() - 24 * 3600 * 1000);
     const [warm, active, recent] = await Promise.all([fetchWarmRuns(config), ledger.activeTasks(), ledger.recentTasks(since)]);
-    return { warm, active: active.map(activeTaskView), recent: recent.map(recentTaskView) };
+    const backlogs = (await Promise.all([...employees.values()].map((e) => backlogOverview({ ledger, config }, e)))).flat();
+    return { warm, active: active.map(activeTaskView), recent: recent.map(recentTaskView), backlogs };
   });
 
   app.get("/runs/:id/view", async (_req, reply) => {
@@ -368,6 +364,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return { monitors: Object.keys(employee.monitors).map((name) => monitorView(employee, name, rows.get(name))) };
   });
 
+  // Flow guards: state of each configured backlog, and the manual resume of a halted one (like POST /tasks, kept off the public internet by the API allowlist).
+  app.get<{ Params: { id: string } }>("/employees/:id/backlogs", async (req, reply) => {
+    const employee = employees.get(req.params.id);
+    if (!employee) return reply.code(404).send({ error: "unknown employee" });
+    return { backlogs: await backlogOverview({ ledger, config }, employee) };
+  });
+
+  app.post<{ Params: { id: string; backlog: string } }>("/employees/:id/backlogs/:backlog/resume", async (req, reply) => {
+    const employee = employees.get(req.params.id);
+    if (!employee?.backlogs?.[req.params.backlog]) return reply.code(404).send({ error: "unknown employee or backlog" });
+    const resumed = await ledger.resumeBacklog(employee.id, req.params.backlog);
+    return reply.code(resumed ? 200 : 409).send({ resumed });
+  });
+
   app.get<{ Params: { id: string } }>("/employees/:id/schedules", async (req, reply) => {
     if (!employees.has(req.params.id)) return reply.code(404).send({ error: "unknown employee" });
     return ledger.listSchedules(req.params.id);
@@ -426,7 +436,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const bl = employee.backlogs?.[id];
       if (!bl) return reply.code(400).send({ error: `employee ${employee.id} has no backlog ${id}` });
       if (targetRoleId !== bl.dispatch.role) return reply.code(400).send({ error: `backlog ${id} dispatches role ${bl.dispatch.role}, not ${targetRoleId}` });
-      const guard = await checkBacklogGuards(ledger, employee, id);
+      const guard = await checkDispatchGuards({ ledger, config, clickup }, employee, id, item);
       if (guard) return reply.code(409).send({ error: guard });
       if ((await ledger.tasksByBacklog(employee.id, id)).some((t) => t.item === item && ACTIVE_STATUSES.has(t.status))) return reply.code(409).send({ error: `guard: item ${item} is already running` });
       const notes = body.data.brief.trim();

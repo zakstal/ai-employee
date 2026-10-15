@@ -27,7 +27,7 @@ export function renderBacklogs(employee: Pick<Employee, "backlogs">): string {
 const item = (i: ItemState, extra = ""): string => `  - ${i.id} (phase ${i.phase}, branch ${i.branch}${i.attempts ? `, attempts ${i.attempts}` : ""})${extra}`;
 
 /** The computed part, per run: appended to the manager's task prompt. `error` replaces the state when the source could not be read. */
-export function renderBacklogState(states: { id: string; state?: BacklogState; error?: string; halted?: string }[]): string {
+export function renderBacklogState(states: { id: string; state?: BacklogState; error?: string; halted?: string; today?: { tasks: number; costUsd: number }; limits?: { maxTasksPerDay: number | null; maxCostUsdPerDay: number | null } }[]): string {
   const lines = ["## Backlog state (computed now by the system; trust it over your memory)"];
   for (const s of states) {
     if (!s.state) {
@@ -36,6 +36,7 @@ export function renderBacklogState(states: { id: string; state?: BacklogState; e
     }
     const st = s.state;
     lines.push("", `### ${s.id}`, `running ${st.running}/${st.concurrency}, free slots ${st.freeSlots}; ${st.done.length}/${st.total} done`);
+    if (s.today) lines.push(`today: ${s.today.tasks}${s.limits?.maxTasksPerDay ? `/${s.limits.maxTasksPerDay}` : ""} tasks, $${s.today.costUsd.toFixed(2)}${s.limits?.maxCostUsdPerDay ? ` of $${s.limits.maxCostUsdPerDay}` : ""}`);
     if (!st.enabled) lines.push("DISABLED: dispatch nothing.");
     else if (s.halted) lines.push(`HALTED: ${s.halted}. Dispatch nothing; report it once.`);
     if (st.runningItems.length) lines.push("running:", ...st.runningItems.map((i) => item(i)));

@@ -366,6 +366,68 @@ export class Ledger {
     return r.rows.map((x) => ({ id: x.id, status: x.status, item: x.item, text: x.text, createdAt: x.created_at }));
   }
 
+  async countActiveByBacklog(employeeId: string, backlogId: string): Promise<number> {
+    const r = await this.db.query<{ count: string }>(
+      "SELECT count(*) FROM tasks WHERE employee_id = $1 AND source->>'backlogId' = $2 AND status IN ('queued','running','awaiting_input')",
+      [employeeId, backlogId],
+    );
+    return Number(r.rows[0]!.count);
+  }
+
+  /** Tasks started since `since` and the cost the finished ones reported (the harness's notional USD; a running task counts 0 until it ends). */
+  async backlogUsageSince(employeeId: string, backlogId: string, since: Date): Promise<{ tasks: number; costUsd: number }> {
+    const r = await this.db.query<{ tasks: number; cost: number }>(
+      "SELECT count(*)::int AS tasks, COALESCE(SUM((result->>'costUsd')::numeric), 0)::float8 AS cost FROM tasks WHERE employee_id = $1 AND source->>'backlogId' = $2 AND created_at >= $3",
+      [employeeId, backlogId, since],
+    );
+    return { tasks: r.rows[0]!.tasks, costUsd: r.rows[0]!.cost };
+  }
+
+  /** The most recent finished tasks of the backlog since it was last resumed, newest first. */
+  async lastFinishedByBacklog(employeeId: string, backlogId: string, n: number): Promise<{ id: string; status: TaskStatus }[]> {
+    const r = await this.db.query<{ id: string; status: TaskStatus }>(
+      `SELECT t.id, t.status FROM tasks t
+        LEFT JOIN backlog_state s ON s.employee_id = t.employee_id AND s.backlog_id = $2
+        WHERE t.employee_id = $1 AND t.source->>'backlogId' = $2 AND t.status IN ('done','failed','cancelled')
+          AND t.updated_at > COALESCE(s.resumed_at, '-infinity'::timestamptz)
+        ORDER BY t.updated_at DESC, t.id LIMIT $3`,
+      [employeeId, backlogId, n],
+    );
+    return r.rows;
+  }
+
+  async getBacklogHalt(employeeId: string, backlogId: string): Promise<{ haltedAt: Date; reason: string } | undefined> {
+    const r = await this.db.query<{ halted_at: Date | null; halted_reason: string | null }>("SELECT halted_at, halted_reason FROM backlog_state WHERE employee_id = $1 AND backlog_id = $2", [employeeId, backlogId]);
+    const row = r.rows[0];
+    return row?.halted_at ? { haltedAt: row.halted_at, reason: row.halted_reason ?? "" } : undefined;
+  }
+
+  /** True only on the call that halted it (so the alert goes out once). */
+  async haltBacklog(employeeId: string, backlogId: string, reason: string): Promise<boolean> {
+    const r = await this.db.query(
+      `INSERT INTO backlog_state (employee_id, backlog_id, halted_at, halted_reason) VALUES ($1,$2,now(),$3)
+       ON CONFLICT (employee_id, backlog_id) DO UPDATE SET halted_at = now(), halted_reason = EXCLUDED.halted_reason WHERE backlog_state.halted_at IS NULL`,
+      [employeeId, backlogId, reason],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /** False if it was not halted. Failures before now no longer count toward the next halt. */
+  async resumeBacklog(employeeId: string, backlogId: string): Promise<boolean> {
+    const r = await this.db.query("UPDATE backlog_state SET halted_at = NULL, halted_reason = NULL, resumed_at = now() WHERE employee_id = $1 AND backlog_id = $2 AND halted_at IS NOT NULL", [employeeId, backlogId]);
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /** True the first time per `day` (so the budget alert goes out once a day). */
+  async markBudgetAlerted(employeeId: string, backlogId: string, day: string): Promise<boolean> {
+    const r = await this.db.query(
+      `INSERT INTO backlog_state (employee_id, backlog_id, alerted_budget_on) VALUES ($1,$2,$3)
+       ON CONFLICT (employee_id, backlog_id) DO UPDATE SET alerted_budget_on = EXCLUDED.alerted_budget_on WHERE backlog_state.alerted_budget_on IS DISTINCT FROM EXCLUDED.alerted_budget_on`,
+      [employeeId, backlogId, day],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
   // ---- manager wakes
   /** Called when a backlog task finishes. Coalesces: many completions before the next run = one wake. */
   async requestManagerWake(employeeId: string, reason: string): Promise<void> {
