@@ -26,6 +26,7 @@ const employee: Employee = {
   id: "dev",
   name: "Dev Bot",
   defaultRole: "assistant",
+  credentials: { vault: { kind: "secret", env: { SENTINEL_ENV: { secret: "sentinel" } } } },
   workstreams: { sdlc: { entryRole: "assistant", description: "test workstream" } },
   monitors: {
     "support-watch": { collector: "clickup-channels", everyMin: 5, role: "ops", description: "test watcher", config: { channels: [{ id: "sup-1", name: "us-support" }] } },
@@ -35,6 +36,11 @@ const employee: Employee = {
       id: "assistant", description: "", systemPrompt: "be brief", allowedTools: ["Read"], disallowedTools: [], mcpServers: {},
       maxTurns: 5, runtime: "k8s", cpu: 1, memoryMb: 256, timeoutSec: 20, credentials: [], repos: [],
       capabilities: ["schedules", "agents", "monitors"], canSchedule: ["ops"], canSpawn: ["ops", "assistant"],
+    },
+    {
+      id: "vault", description: "", systemPrompt: "be brief", allowedTools: ["Read"], disallowedTools: [], mcpServers: {},
+      maxTurns: 5, runtime: "k8s", cpu: 1, memoryMb: 256, timeoutSec: 20, credentials: [], grants: ["vault"], repos: [],
+      capabilities: [], canSchedule: [], canSpawn: [],
     },
     {
       id: "ops", description: "", systemPrompt: "be brief", allowedTools: ["Read"], disallowedTools: [], mcpServers: {},
@@ -50,11 +56,12 @@ function fakeRunnerCommand(spec: RunSpec): string[] {
   const fail = prompt.includes("FAIL");
   // Session trace only for chat-conversation runs (history paste or resumed), so other tests keep exact echoes.
   const chatRun = Boolean(spec.env.RESUME_SESSION_ID) || (Boolean(spec.env.WORKSPACE_KEY) && prompt.includes("Conversation so far"));
+  const cred = spec.env.SENTINEL_ENV ? ` [cred=${spec.env.SENTINEL_ENV}]` : "";
   const trace = chatRun ? ` [resume=${spec.env.RESUME_SESSION_ID ?? "none"} ws=${spec.env.WORKSPACE_KEY ?? "none"}]` : "";
   const events = JSON.stringify({
     events: [
       { runId: spec.runId, seq: 1, ts: "2026-01-01T00:00:00Z", type: "started", harness: "fake", sessionId: `sess-${spec.runId}` },
-      { runId: spec.runId, seq: 2, ts: "2026-01-01T00:00:01Z", type: "result", text: `echo: ${prompt}${trace}`, isError: false, numTurns: 1 },
+      { runId: spec.runId, seq: 2, ts: "2026-01-01T00:00:01Z", type: "result", text: `echo: ${prompt}${trace}${cred}`, isError: false, numTurns: 1 },
     ],
   });
   const post = `curl -sf -X POST -H "authorization: Bearer $RUN_TOKEN" -H "content-type: application/json" --data '${events.replace(/'/g, "'\\''")}' "$EVENT_SINK_URL"`;
@@ -118,6 +125,20 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
     expect((t.result as { text: string }).text).toBe("echo: hello world");
     const events = await ledger.listEvents(taskId);
     expect(events.map((e) => e.type)).toEqual(["started", "result"]);
+  }, 30_000);
+
+  it("credentials reach the sandbox but never the recorded step outputs", async () => {
+    process.env.SECRET_SENTINEL = "SECRET-SENTINEL";
+    const res = await app.inject({ method: "POST", url: "/tasks", payload: { employeeId: "dev", roleId: "vault", prompt: "creds", taskKey: "creds1" } });
+    const { taskId } = res.json() as { taskId: string };
+    const t = await waitFor(taskId, ["done", "failed"]);
+    delete process.env.SECRET_SENTINEL;
+    expect((t.result as { text: string }).text).toBe("echo: creds [cred=SECRET-SENTINEL]");
+    const dbos = new pg.Pool({ connectionString: TEST_DBOS_URL });
+    const { rows } = await dbos.query("SELECT function_name, output FROM dbos.operation_outputs WHERE workflow_uuid = $1 AND function_name IN ('buildRunSpec', 'launchSandbox')", [taskId]);
+    await dbos.end();
+    expect(rows.map((r) => r.function_name).sort()).toEqual(["buildRunSpec", "launchSandbox"]); // the fake runner echoes its env into the result, so only the launch steps are checked
+    expect(JSON.stringify(rows)).not.toContain("SECRET-SENTINEL");
   }, 30_000);
 
   it("dedups the same task key", async () => {

@@ -3,7 +3,7 @@ import type { Config } from "../config.js";
 import { deps } from "./deps.js";
 import { requestWake, shouldWake } from "../manager/tick.js";
 import { BOT_MARKER } from "../clickup/chat.js";
-import { grantPurposes, legacyEnv } from "../credentials/index.js";
+import { grantEnvNames, grantPurposes, resolveGrantEnv } from "../credentials/index.js";
 
 /**
  * Steps: plain async functions with side effects. Engine-free. Each must be
@@ -36,7 +36,6 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
     ...(role.repos.length ? { REPOS: JSON.stringify(role.repos) } : {}),
     ...(conversationId ? { WORKSPACE_KEY: `conv-${conversationId}` } : {}),
     ...(sessionId ? { RESUME_SESSION_ID: sessionId } : {}),
-    ...resolveCredentials(roleGrants(role)),
   };
   // Built-in tools the agent may call back into the control plane with (per-run token, scoped to this task).
   const builtinServers: Record<string, unknown> = {};
@@ -47,7 +46,10 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
     };
     if (!role.allowedTools.includes("mcp__ai_employee__*")) env.ALLOWED_TOOLS = [...role.allowedTools, "mcp__ai_employee__*"].join(",");
   }
-  env.MCP_CONFIG = JSON.stringify({ mcpServers: { ...resolvableMcpServers(role.mcpServers, env), ...builtinServers } });
+  // Credential values are NOT part of this step's output (DBOS records it): launchSandbox resolves them. Only their
+  // names are needed here, so MCP servers whose ${VAR} placeholders a grant provides are kept.
+  const credNames = grantEnvNames(employee, role, config);
+  env.MCP_CONFIG = JSON.stringify({ mcpServers: { ...resolvableMcpServers(role.mcpServers, { ...env, ...Object.fromEntries(credNames.map((n) => [n, "1"])) }), ...builtinServers } });
   return {
     runId: taskId,
     ...resolveImage(role, config),
@@ -99,12 +101,6 @@ export function environmentFooter(role: Role, employee?: Employee): string {
   if (bash.length) lines.push(`- Shell commands allowed: ${bash.map((b) => b.slice(5, -1)).join(", ")}. Anything else via Bash is denied.`);
   lines.push("- If you are unsure whether something works, run it once and report the actual result. Never claim a tool is unavailable without trying.");
   return lines.join("\n");
-}
-
-/** Static env for built-in grants, read from the control plane's own config. Per-employee logins go through `resolveGrantEnv`. */
-export function resolveCredentials(grants: string[], cfg?: Config): Record<string, string> {
-  const config = cfg ?? deps().config;
-  return Object.assign({}, ...grants.map((g) => legacyEnv(g, config)));
 }
 
 /**
@@ -182,10 +178,20 @@ export async function markRunning(taskId: string, handle: RunHandle): Promise<vo
   await deps().ledger.setStatus(taskId, "running", { runHandle: handle });
 }
 
-export async function launchSandbox(spec: RunSpec, runtimeName: string): Promise<RunHandle> {
-  const rt = deps().runtimes[runtimeName];
+/**
+ * Resolves the role's credentials and starts the sandbox with them. Resolution happens here, not in buildRunSpec,
+ * because DBOS persists every step's return value: this step returns only a RunHandle, so no credential value is
+ * stored at rest. A rerun after a crash re-resolves (right for per-task minted tokens).
+ */
+export async function launchSandbox(spec: RunSpec, runtimeName: string, input: TaskInput): Promise<RunHandle> {
+  const { config, employees, runtimes, secrets } = deps();
+  const rt = runtimes[runtimeName];
   if (!rt) throw new Error(`no sandbox runtime registered as ${runtimeName}`);
-  return rt.start(spec);
+  const employee = employees.get(input.employeeId);
+  if (!employee) throw new Error(`unknown employee ${input.employeeId}`);
+  const role = resolveRole(employee, input.roleId);
+  const grantEnv = await resolveGrantEnv({ employee, role, taskId: spec.runId, config, secrets, fetch, now: () => new Date() }, roleGrants(role));
+  return rt.start({ ...spec, env: { ...spec.env, ...grantEnv } });
 }
 
 const VERBS = [

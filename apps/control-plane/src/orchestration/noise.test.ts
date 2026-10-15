@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isNoiseVerdict, resolveCredentials, summarize } from "./steps.js";
+import { legacyEnv } from "../credentials/index.js";
+import { isNoiseVerdict, summarize } from "./steps.js";
 
 describe("isNoiseVerdict", () => {
   it("accepts the bare word, a trailing verdict after reasoning, and markdown-wrapped forms", () => {
@@ -32,9 +33,9 @@ describe("summarize", () => {
 
 describe("github grant", () => {
   it("also sets NPM_GITHUB_TOKEN, which private @scope .npmrc files read", () => {
-    const env = resolveCredentials(["github"], { GH_TOKEN: "ghp_x" } as never);
+    const env = legacyEnv("github", { GH_TOKEN: "ghp_x" } as never);
     expect(env.GH_TOKEN).toBe("ghp_x");
     expect(env.NPM_GITHUB_TOKEN).toBe("ghp_x");
-    expect(resolveCredentials(["clickup"], { GH_TOKEN: "ghp_x" } as never).NPM_GITHUB_TOKEN).toBeUndefined();
+    expect(legacyEnv("clickup", { GH_TOKEN: "ghp_x" } as never).NPM_GITHUB_TOKEN).toBeUndefined();
   });
 });

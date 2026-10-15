@@ -15,6 +15,15 @@ describe("resolvableMcpServers", () => {
   });
 });
 
+describe("buildRunSpec credential names", () => {
+  it("resolvableMcpServers keeps clickup when a grant provides its env names", () => {
+    const servers = { clickup: { command: "c", env: { K: "${CLICKUP_API_TOKEN}" } } };
+    const names = { CLICKUP_API_TOKEN: "1" };
+    expect(Object.keys(resolvableMcpServers(servers, names))).toEqual(["clickup"]);
+    expect(Object.keys(resolvableMcpServers(servers, {}))).toEqual([]);
+  });
+});
+
 describe("environmentFooter", () => {
   it("states az/gh/clickup/delegation from grants and allowlist", () => {
     const f = environmentFooter({
