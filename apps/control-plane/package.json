@@ -9,6 +9,7 @@
     "test": "vitest run",
     "migrate": "tsx src/db/migrate.ts",
     "config": "node dist/cli/config.js",
+    "credentials": "node dist/cli/credentials.js",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js"
   },
