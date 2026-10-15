@@ -1,3 +1,5 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -30,5 +32,14 @@ describe("resolveEffectiveConfig", () => {
     const names = rolesOf(json).implement!.credentialEnvNames;
     expect(names).toContain("GH_TOKEN");
     expect(names).not.toContain("CLICKUP_API_TOKEN");
+  });
+  it("--env settings reach the dump (RUNNER_IMAGES picks an imageRef role's image and job)", async () => {
+    const d = await mkdtemp(path.join(tmpdir(), "resolve-env-"));
+    await writeFile(path.join(d, "e.yaml"), "id: e\nname: E\ndefaultRole: r\nroles:\n  - { id: r, imageRef: runner-ops, runtime: cloudrun }\n");
+    const env = { RUNNER_IMAGES: '{"runner-ops":"reg/runner-ops:1"}', CLOUDRUN_JOB_PREFIX: "acme" };
+    const { json } = await resolveEffectiveConfig({ dirs: [d], sandboxRuntime: "warm", env });
+    const r = (json.employees as { e: { roles: Record<string, { imageResolved: string; cloudRunJob: string }> } }).e.roles.r!;
+    expect(r.imageResolved).toBe("reg/runner-ops:1");
+    expect(r.cloudRunJob).toBe("acme-runner-ops");
   });
 });
