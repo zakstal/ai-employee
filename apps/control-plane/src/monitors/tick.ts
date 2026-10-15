@@ -1,10 +1,9 @@
-import type { Employee, Monitor, TaskInput } from "@ai-employee/core";
-import type { Config } from "../config.js";
-import type { SecretStore } from "../credentials/types.js";
+import { resolveRole, type Employee, type Monitor, type TaskInput } from "@ai-employee/core";
 import { deps } from "../orchestration/deps.js";
 import type { MonitorRow } from "../db/ledger.js";
-import { collectAzureErrors, type AzureAuth } from "./azure.js";
-import { collectClickUpChannels } from "./clickup.js";
+import { getCollector } from "../collectors/index.js";
+import { resolveGrantEnv } from "../credentials/index.js";
+export { azureAuthFor } from "../collectors/azure-errors.js";
 import { renderEvidence, type CollectResult, type Finding } from "./types.js";
 
 /** Engine-free helpers for the monitor tick (called as steps from the DBOS tick workflow). */
@@ -32,37 +31,19 @@ export async function listDueMonitors(now: Date): Promise<DueMonitor[]> {
   return due;
 }
 
-/** Azure sign-in for a monitor: the employee's named credential if the monitor has one, else the global AZURE_* env. */
-export async function azureAuthFor(employee: Employee, monitor: Monitor, config: Config, secrets: SecretStore): Promise<AzureAuth> {
-  if (!monitor.credential) {
-    return {
-      subscriptionId: config.AZURE_SUBSCRIPTION_ID,
-      brokerUrl: config.AZURE_BROKER_URL || undefined,
-      brokerSecret: config.AZURE_BROKER_SECRET || undefined,
-      tenantId: config.AZURE_TENANT_ID || undefined,
-      clientId: config.AZURE_CLIENT_ID || undefined,
-      clientSecret: config.AZURE_CLIENT_SECRET || undefined,
-    };
-  }
-  const spec = employee.credentials?.[monitor.credential];
-  const subscriptionId = (spec && "subscriptionId" in spec && spec.subscriptionId) || config.AZURE_SUBSCRIPTION_ID;
-  if (spec?.kind === "federated") return { subscriptionId, federated: { tenantId: spec.tenantId, clientId: spec.clientId, audience: spec.audience } };
-  if (spec?.kind === "broker") {
-    const brokerSecret = await secrets.get(spec.secret.secret);
-    if (brokerSecret === undefined) throw new Error(`credential "${monitor.credential}": secret "${spec.secret.secret}" (broker key) has no value`);
-    return { subscriptionId, brokerUrl: spec.url, brokerSecret };
-  }
-  throw new Error(`monitor credential "${monitor.credential}" must name a broker or federated credential of ${employee.id}`);
-}
-
 export async function collect(d: DueMonitor, now: Date): Promise<CollectResult> {
   const { config, clickup, secrets } = deps();
-  switch (d.monitor.collector) {
-    case "azure-errors":
-      return collectAzureErrors(d.monitor.config, await azureAuthFor(d.employee, d.monitor, config, secrets), d.row.state, now);
-    case "clickup-channels":
-      return collectClickUpChannels(d.monitor.config, clickup, config.CLICKUP_TEAM_ID, d.row.state);
-  }
+  const c = getCollector(d.monitor.collector);
+  if (!c) throw new Error(`unknown collector "${d.monitor.collector}"`);
+  const monitorConfig = c.configSchema.parse(d.monitor.config);
+  return c.collect(
+    {
+      employee: d.employee, monitorName: d.name, monitor: d.monitor, now, fetch, clickup, config, secrets,
+      credential: (name) => resolveGrantEnv({ employee: d.employee, role: resolveRole(d.employee, d.monitor.role), taskId: `monitor:${d.name}`, config, secrets, fetch, now: () => now }, [name]),
+    },
+    monitorConfig as never,
+    d.row.state,
+  );
 }
 
 /**

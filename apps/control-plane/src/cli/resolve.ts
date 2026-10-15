@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { CloudRunJobRuntime } from "@ai-employee/adapters";
 import { roleGrants, type Employee, type Role } from "@ai-employee/core";
 import { loadConfig, type Config } from "../config.js";
+import { loadPlugins } from "../collectors/index.js";
 import { loadEmployees } from "../roles/load.js";
 import { grantEnvNames } from "../credentials/index.js";
 import { environmentFooter, resolveImage, resolvableMcpServers, runtimeFor } from "../orchestration/steps.js";
@@ -51,6 +52,7 @@ function sortKeys(v: unknown): unknown {
 
 export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Resolved> {
   const employees = await loadEmployees(opts.dirs);
+  const plugins = (await loadPlugins(opts.dirs)).loaded;
   // Credential values never reach the output: only which env names a role would receive.
   const live = opts.liveEnvNames ? new Set(opts.liveEnvNames) : undefined;
   const base = loadConfig({ DATABASE_URL: "x", DBOS_SYSTEM_DATABASE_URL: "x", ...opts.env, SANDBOX_RUNTIME: opts.sandboxRuntime ?? opts.env?.SANDBOX_RUNTIME, MANAGER_ROLE: opts.managerRole ?? opts.env?.MANAGER_ROLE } as NodeJS.ProcessEnv);
@@ -85,6 +87,7 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
       schemaVersion: 1,
       source: { gitSha: gitSha(), dirs: opts.dirs },
       env: { managerRole: base.MANAGER_ROLE, sandboxRuntime: config.SANDBOX_RUNTIME, cloudRunJobPrefix: config.CLOUDRUN_JOB_PREFIX, defaultEmployeeId: config.DEFAULT_EMPLOYEE_ID, defaultTz: base.DEFAULT_TZ, digestTz: base.DIGEST_TZ || base.DEFAULT_TZ },
+      ...(plugins.length ? { collectorPlugins: plugins } : {}),
       employees: out,
     }) as Record<string, unknown>,
     prompts,
