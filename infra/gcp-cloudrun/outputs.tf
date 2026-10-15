@@ -1,6 +1,6 @@
 output "service_url" {
   description = "Public URL of the control-plane Cloud Run service. Feed this back into -var=\"public_base_url=...\" and re-apply."
-  value       = google_cloud_run_v2_service.control_plane.uri
+  value       = one(google_cloud_run_v2_service.control_plane[*].uri)
 }
 
 output "cloudsql_connection_name" {

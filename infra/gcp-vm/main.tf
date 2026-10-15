@@ -164,6 +164,7 @@ resource "google_compute_instance" "vm" {
       azure_broker_secret      = var.azure_broker_secret
       azure_tenant_id          = var.azure_tenant_id
       azure_subscription_id    = var.azure_subscription_id
+      api_allow_ips            = var.api_allow_ips
     })
   }
 

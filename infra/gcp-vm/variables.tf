@@ -94,3 +94,9 @@ variable "secret_shells" {
   type        = set(string)
   default     = []
 }
+
+variable "api_allow_ips" {
+  description = "Space-separated IPs/CIDRs allowed to reach the control plane's unauthenticated routes (/tasks, /employees/*, /stats, /runtime, /status, /runs/*/view). Empty = open. Webhooks, agent and run-token routes, and /health stay reachable from anywhere."
+  type        = string
+  default     = ""
+}

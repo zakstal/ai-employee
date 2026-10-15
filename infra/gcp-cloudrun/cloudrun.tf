@@ -42,6 +42,7 @@ locals {
 
 # --- Control plane: always-on Cloud Run service -----------------------
 resource "google_cloud_run_v2_service" "control_plane" {
+  count               = var.control_plane_service ? 1 : 0
   project             = var.project_id
   name                = "${var.name}-control-plane"
   location            = var.region
@@ -137,9 +138,10 @@ resource "google_cloud_run_v2_service" "control_plane" {
 # check would only add a redundant, and for public webhook senders
 # impossible, IAM identity requirement.
 resource "google_cloud_run_v2_service_iam_member" "public_invoker" {
+  count    = var.control_plane_service ? 1 : 0
   project  = var.project_id
   location = var.region
-  name     = google_cloud_run_v2_service.control_plane.name
+  name     = google_cloud_run_v2_service.control_plane[0].name
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
@@ -185,4 +187,14 @@ resource "google_cloud_run_v2_job" "runner" {
   }
 
   depends_on = [google_project_service.apis]
+}
+
+moved {
+  from = google_cloud_run_v2_service.control_plane
+  to   = google_cloud_run_v2_service.control_plane[0]
+}
+
+moved {
+  from = google_cloud_run_v2_service_iam_member.public_invoker
+  to   = google_cloud_run_v2_service_iam_member.public_invoker[0]
 }

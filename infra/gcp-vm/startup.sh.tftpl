@@ -192,6 +192,15 @@ COMPOSE_EOF
 # --- Caddyfile: automatic HTTPS for the sslip.io hostname -------------------
 cat > "$APP_DIR/Caddyfile" <<CADDY_EOF
 ${host} {
+%{ if api_allow_ips != "" ~}
+	# The routes with no authentication of their own: only from the allowlist.
+	@locked {
+		path /tasks /tasks/* /employees/* /stats /runtime /status /runs/*/view
+		not path /tasks/recent
+		not remote_ip ${api_allow_ips}
+	}
+	respond @locked "forbidden" 403
+%{ endif ~}
 	reverse_proxy control-plane:3000
 }
 CADDY_EOF
