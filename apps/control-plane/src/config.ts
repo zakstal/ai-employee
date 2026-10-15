@@ -42,6 +42,8 @@ const Env = z.object({
   /** Cloud Run Job per runner image: `${prefix}-runner`, `${prefix}-runner-ops`. */
   CLOUDRUN_JOB_PREFIX: z.string().default("ai-employee"),
   ROLES_DIR: z.string().default("roles"),
+  /** Comma-separated config dirs, instance dir first (presets after it). Empty = ROLES_DIR alone. */
+  CONFIG_DIRS: z.string().default(""),
   /** Employee that owns Slack traffic until per-channel routing exists. */
   DEFAULT_EMPLOYEE_ID: z.string().default("dev"),
   /** Only for SANDBOX_RUNTIME=local: command to run the runner. */
@@ -65,6 +67,7 @@ const Env = z.object({
 });
 
 export type Config = z.infer<typeof Env>;
+export const configDirs = (c: Config): string[] => (c.CONFIG_DIRS || c.ROLES_DIR).split(",").map((s) => s.trim()).filter(Boolean);
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return Env.parse(env);
 }

@@ -11,4 +11,5 @@ data:
   RUNNER_IMAGE: "REGION-docker.pkg.dev/PROJECT_ID/ai-employee/runner:latest"
   SANDBOX_RUNTIME: "k8s"
   ROLES_DIR: "/app/apps/control-plane/roles"
+  # CONFIG_DIRS: "/config,/app/apps/control-plane/roles"   # optional: instance dir first, then presets; overrides ROLES_DIR
   DEFAULT_EMPLOYEE_ID: "dev"

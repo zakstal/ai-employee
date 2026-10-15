@@ -7,7 +7,7 @@ import { loadEmployees } from "../roles/load.js";
 import { environmentFooter, resolveCredentials, resolvableMcpServers, runtimeFor } from "../orchestration/steps.js";
 
 export interface ResolveOptions {
-  dir: string;
+  dirs: string[];
   /** Env var names that are non-empty on the live control plane. Omitted = every credential counts as set (structural view). */
   liveEnvNames?: string[] | undefined;
   sandboxRuntime?: Config["SANDBOX_RUNTIME"] | undefined;
@@ -43,7 +43,7 @@ function sortKeys(v: unknown): unknown {
 }
 
 export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Resolved> {
-  const employees = await loadEmployees(opts.dir);
+  const employees = await loadEmployees(opts.dirs);
   // Credential values never reach the output: only which env names a role would receive.
   const live = opts.liveEnvNames ? new Set(opts.liveEnvNames) : undefined;
   const base = loadConfig({ DATABASE_URL: "x", DBOS_SYSTEM_DATABASE_URL: "x", SANDBOX_RUNTIME: opts.sandboxRuntime, MANAGER_ROLE: opts.managerRole } as NodeJS.ProcessEnv);
@@ -68,7 +68,7 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
   return {
     json: sortKeys({
       schemaVersion: 1,
-      source: { gitSha: gitSha(), dirs: [opts.dir] },
+      source: { gitSha: gitSha(), dirs: opts.dirs },
       env: { managerRole: base.MANAGER_ROLE, sandboxRuntime: config.SANDBOX_RUNTIME, cloudRunJobPrefix: config.CLOUDRUN_JOB_PREFIX, defaultEmployeeId: config.DEFAULT_EMPLOYEE_ID, defaultTz: base.DEFAULT_TZ, digestTz: base.DIGEST_TZ || base.DEFAULT_TZ },
       employees: out,
     }) as Record<string, unknown>,
@@ -101,7 +101,7 @@ function describeRole(role: Role, config: Config, registered: string[], jobs: Cl
     capabilities: role.capabilities,
     canSchedule: role.canSchedule,
     canSpawn: role.canSpawn,
-    systemPrompt: { bytes: Buffer.byteLength(prompt), sha256: createHash("sha256").update(prompt).digest("hex"), file: role.systemPromptFile ?? null },
+    systemPrompt: { bytes: Buffer.byteLength(prompt), sha256: createHash("sha256").update(prompt).digest("hex"), file: role.systemPromptFile ?? null, ...(role.systemPromptFiles ? { files: role.systemPromptFiles } : {}) },
   };
 }
 

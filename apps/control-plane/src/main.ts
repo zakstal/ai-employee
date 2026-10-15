@@ -1,8 +1,7 @@
 import { DBOS } from "@dbos-inc/dbos-sdk";
-import path from "node:path";
 import { CloudRunJobRuntime, KubernetesJobRuntime, LocalProcessRuntime, WarmRunnerRuntime } from "@ai-employee/adapters";
 import type { SandboxRuntime } from "@ai-employee/core";
-import { loadConfig } from "./config.js";
+import { configDirs, loadConfig } from "./config.js";
 import { Ledger } from "./db/ledger.js";
 import { migrate } from "./db/migrate.js";
 import { closePool, getPool } from "./db/pool.js";
@@ -22,7 +21,7 @@ async function main(): Promise<void> {
 
   const pool = getPool(config.DATABASE_URL);
   const ledger = new Ledger(pool);
-  const employees = await loadEmployees(path.resolve(config.ROLES_DIR));
+  const employees = await loadEmployees(configDirs(config));
   for (const e of employees.values()) await ledger.ensureEmployee(e.id, e.name);
 
   // Only construct the runtime the deployment selected: k8s needs a kubeconfig, cloudrun needs GCP ADC.

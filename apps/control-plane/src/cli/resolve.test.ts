@@ -9,24 +9,24 @@ const rolesOf = (j: Record<string, unknown>) => (j.employees as { dev: { roles: 
 
 describe("resolveEffectiveConfig", () => {
   it("dumps every role of the shipped dev.yaml", async () => {
-    const { json, prompts } = await resolveEffectiveConfig({ dir, sandboxRuntime: "warm" });
+    const { json, prompts } = await resolveEffectiveConfig({ dirs: [dir], sandboxRuntime: "warm" });
     const roles = rolesOf(json);
     expect(Object.keys(roles)).toHaveLength(Object.keys(prompts).length);
     expect(roles.implement!.cloudRunJob).toBe("ai-employee-runner-ops");
   });
   it("never contains a secret value", async () => {
-    const { json } = await resolveEffectiveConfig({ dir });
+    const { json } = await resolveEffectiveConfig({ dirs: [dir] });
     const text = JSON.stringify(json);
     expect(text).toContain("CLICKUP_API_TOKEN");
     expect(text).not.toContain("SECRET-SENTINEL-VALUE"); // the sentinel used for credential values
   });
   it("is deterministic", async () => {
-    const a = await resolveEffectiveConfig({ dir });
-    const b = await resolveEffectiveConfig({ dir });
+    const a = await resolveEffectiveConfig({ dirs: [dir] });
+    const b = await resolveEffectiveConfig({ dirs: [dir] });
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
   it("sentinel vs live names", async () => {
-    const { json } = await resolveEffectiveConfig({ dir, liveEnvNames: ["GH_TOKEN"] });
+    const { json } = await resolveEffectiveConfig({ dirs: [dir], liveEnvNames: ["GH_TOKEN"] });
     const names = rolesOf(json).implement!.credentialEnvNames;
     expect(names).toContain("GH_TOKEN");
     expect(names).not.toContain("CLICKUP_API_TOKEN");

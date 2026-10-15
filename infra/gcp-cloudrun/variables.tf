@@ -1,7 +1,6 @@
 variable "project_id" {
   type        = string
   description = "GCP project to deploy into."
-  default     = "my-gcp-project"
 }
 
 variable "region" {
@@ -140,16 +139,25 @@ variable "runner_ops_image" {
 
 variable "extra_runner_images" {
   description = <<-EOT
-    Additional runner images, each becomes its own Cloud Run Job named "<name>-<key>" (the control plane picks the Job
-    from the image basename, so the key must equal the image's repository basename, e.g. key "runner-custom" for
-    ".../runner-custom:tag"). Build them FROM the public runner image. Example:
+    Additional runner images, each becomes its own Cloud Run Job named "<name>-<key>". A role selects it with
+    `imageRef: <key>` (and RUNNER_IMAGES mapping the key to the image), or, without imageRef, by the image's
+    repository basename, so then the key must equal that basename, e.g. key "runner-custom" for
+    ".../runner-custom:tag". Build them FROM the public runner image. Example:
       extra_runner_images = { runner-custom = { image = "REGION-docker.pkg.dev/PROJECT/ai-employee/runner-custom:tag", cpu = "8", memory = "16Gi", timeout = "14400s" } }
+    cpu, memory and timeout default to 4, 16Gi and 5400s; service_account defaults to the shared runner account.
   EOT
   type = map(object({
-    image   = string
-    cpu     = string
-    memory  = string
-    timeout = string
+    image           = string
+    cpu             = optional(string, "4")
+    memory          = optional(string, "16Gi")
+    timeout         = optional(string, "5400s")
+    service_account = optional(string)
   }))
   default = {}
+}
+
+variable "secret_shells" {
+  description = "Secret Manager secrets to create EMPTY (no version). Values are added out of band, so they never enter tfvars or Terraform state. The VM stack grants its service account access to each."
+  type        = set(string)
+  default     = []
 }

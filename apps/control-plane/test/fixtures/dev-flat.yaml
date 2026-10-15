@@ -1,0 +1,16 @@
+id: dev
+name: Dev Bot
+defaultRole: developer
+workstreams:
+  sdlc: { entryRole: developer }
+roles:
+  - id: developer
+    allowedTools: [Read, Grep, Edit, Bash(git *)]
+    credentials: [github]
+    maxTurns: 100
+    systemPromptFiles: [prompts/base.md, prompts/extra.md]
+  - id: reviewer
+    allowedTools: [Read, Grep, Bash(git *)]
+    credentials: [github]
+    maxTurns: 10
+    systemPromptFiles: [prompts/base.md, prompts/extra.md]

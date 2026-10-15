@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RunSpec } from "@ai-employee/core";
 import { CloudRunJobRuntime } from "./cloudrun-job.js";
 
+type Client = NonNullable<ConstructorParameters<typeof CloudRunJobRuntime>[0]["client"]>;
 const JOB_PATH = "projects/p1/locations/us-central1/jobs/ai-employee-runner";
 const EXEC = (name: string) => `${JOB_PATH}/executions/${name}`;
 
@@ -38,11 +39,11 @@ function mockClient() {
     getExecution: vi.fn(),
     cancelExecution: vi.fn().mockResolvedValue([{}]),
   };
-  return { jobs, executions } as any;
+  return { jobs, executions };
 }
 
-function runtime(client: any) {
-  return new CloudRunJobRuntime({ projectId: "p1", region: "us-central1", client });
+function runtime(client: ReturnType<typeof mockClient>) {
+  return new CloudRunJobRuntime({ projectId: "p1", region: "us-central1", client: client as unknown as Client });
 }
 
 describe("CloudRunJobRuntime", () => {

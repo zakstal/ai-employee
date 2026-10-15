@@ -166,7 +166,7 @@ resource "google_cloud_run_v2_job" "runner" {
 
   template {
     template {
-      service_account = google_service_account.runner.email
+      service_account = coalesce(each.value.service_account, google_service_account.runner.email)
       # Per-run timeout comes from the role via execution overrides; this is only the ceiling for one (per job, see runner_jobs).
       timeout     = each.value.timeout
       max_retries = 0

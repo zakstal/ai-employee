@@ -1,7 +1,6 @@
 variable "project_id" {
   type        = string
   description = "GCP project to deploy into."
-  default     = "my-gcp-project"
 }
 
 variable "region" {
@@ -47,7 +46,6 @@ variable "runner_image" {
 variable "cloudsql_connection_name" {
   type        = string
   description = "Cloud SQL instance connection name for the ai-employee-pg instance created by infra/gcp-cloudrun (<project>:<region>:<instance>). This stack does not create or manage that instance."
-  default     = "my-gcp-project:us-central1:ai-employee-pg"
 }
 
 variable "runner_token" {
@@ -89,4 +87,10 @@ variable "azure_tenant_id" {
 variable "azure_subscription_id" {
   type    = string
   default = ""
+}
+
+variable "secret_shells" {
+  description = "Extra Secret Manager secrets the VM may read, created empty by infra/gcp-cloudrun (same variable there). Apply gcp-cloudrun first."
+  type        = set(string)
+  default     = []
 }

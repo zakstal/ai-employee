@@ -18,7 +18,7 @@ locals {
   # infra/gcp-cloudrun's secrets.tf, reused here by name. Scoped per-secret IAM below
   # rather than a project-wide roles/secretmanager.secretAccessor, since the VM has no
   # business reading slack-signing-secret, azure-client-secret, etc.
-  vm_secret_ids = [
+  vm_secret_ids = concat([
     "database-url",
     "dbos-system-database-url",
     "claude-code-oauth-token",
@@ -26,7 +26,7 @@ locals {
     "clickup-webhook-secret",
     "clickup-chat-secret",
     "gh-token",
-  ]
+  ], tolist(var.secret_shells))
 }
 
 # --- Static external IP -----------------------------------------------
