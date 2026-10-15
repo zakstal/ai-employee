@@ -13,6 +13,8 @@ export interface ResolveOptions {
   liveEnvNames?: string[] | undefined;
   sandboxRuntime?: Config["SANDBOX_RUNTIME"] | undefined;
   managerRole?: string | undefined;
+  /** The deployment's non-secret settings (RUNNER_IMAGES, CLOUDRUN_JOB_PREFIX, DEFAULT_TZ ...), as in the control plane's environment. */
+  env?: Record<string, string> | undefined;
 }
 
 export interface Resolved {
@@ -47,7 +49,7 @@ export async function resolveEffectiveConfig(opts: ResolveOptions): Promise<Reso
   const employees = await loadEmployees(opts.dirs);
   // Credential values never reach the output: only which env names a role would receive.
   const live = opts.liveEnvNames ? new Set(opts.liveEnvNames) : undefined;
-  const base = loadConfig({ DATABASE_URL: "x", DBOS_SYSTEM_DATABASE_URL: "x", SANDBOX_RUNTIME: opts.sandboxRuntime, MANAGER_ROLE: opts.managerRole } as NodeJS.ProcessEnv);
+  const base = loadConfig({ DATABASE_URL: "x", DBOS_SYSTEM_DATABASE_URL: "x", ...opts.env, SANDBOX_RUNTIME: opts.sandboxRuntime ?? opts.env?.SANDBOX_RUNTIME, MANAGER_ROLE: opts.managerRole ?? opts.env?.MANAGER_ROLE } as NodeJS.ProcessEnv);
   const config = Object.fromEntries(
     Object.entries(base).map(([k, v]) => [k, typeof v === "string" && v === "" ? (live ? (live.has(k) ? SENTINEL : "") : SENTINEL) : v]),
   ) as Config;
