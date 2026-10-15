@@ -3,7 +3,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { resolveEffectiveConfig } from "./resolve.js";
 
-const USAGE = `usage: config resolve [--dir <roles dir>] [--out <dir>] [--prompts full] [--sandbox-runtime k8s|local|cloudrun|warm]
+const USAGE = `usage: config resolve [--dir <config dir>]... [--out <dir>] [--prompts full] [--sandbox-runtime k8s|local|cloudrun|warm]
                       [--manager-role <id>] [--live-env-names <file>]
 Prints the effective configuration as JSON (no secret values). With --out, writes config.json
 (and prompts/<employee>.<role>.md with --prompts full) instead.`;
@@ -12,7 +12,7 @@ async function main(): Promise<void> {
   const { positionals, values: v } = parseArgs({
     allowPositionals: true,
     options: {
-      dir: { type: "string", default: process.env.ROLES_DIR ?? "roles" },
+      dir: { type: "string", multiple: true },
       out: { type: "string" },
       prompts: { type: "string" },
       "sandbox-runtime": { type: "string" },
@@ -26,7 +26,7 @@ async function main(): Promise<void> {
   }
   const liveEnvNames = v["live-env-names"] ? (await readFile(v["live-env-names"], "utf8")).split(/\s+/).filter(Boolean) : undefined;
   const { json, prompts } = await resolveEffectiveConfig({
-    dir: path.resolve(v.dir),
+    dirs: (v.dir?.length ? v.dir : [process.env.ROLES_DIR ?? "roles"]).map((d) => path.resolve(d)),
     liveEnvNames,
     sandboxRuntime: v["sandbox-runtime"] as never,
     managerRole: v["manager-role"],

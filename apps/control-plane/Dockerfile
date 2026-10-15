@@ -12,7 +12,7 @@ RUN pnpm -r build
 FROM node:22-slim
 ENV NODE_ENV=production
 WORKDIR /app/apps/control-plane
-# Copies dist/, node_modules, and roles/ (ROLES_DIR=/app/apps/control-plane/roles,
+# Copies dist/, node_modules, and roles/ (ROLES_DIR=/app/apps/control-plane/roles, or CONFIG_DIRS,
 # matching infra/k8s/configmap.example.yaml).
 COPY --from=build --chown=node:node /app /app
 USER node
