@@ -1,12 +1,16 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { checkConfig } from "./check.js";
 import { resolveEffectiveConfig } from "./resolve.js";
 
 const USAGE = `usage: config resolve [--dir <config dir>]... [--out <dir>] [--prompts full] [--sandbox-runtime k8s|local|cloudrun|warm]
                       [--manager-role <id>] [--live-env-names <file>]
-Prints the effective configuration as JSON (no secret values). With --out, writes config.json
-(and prompts/<employee>.<role>.md with --prompts full) instead.`;
+       config check   [--dir <config dir>]... [--manager-role <id>] [--sandbox-runtime ...] [--public --deny-file <file>]
+resolve prints the effective configuration as JSON (no secret values). With --out, it writes config.json
+(and prompts/<employee>.<role>.md with --prompts full) instead.
+check validates the config (schema, prompt files, extends, role references, MCP credentials) and exits 1 on any
+problem. With --public it also scans everything loaded against a deny list (plain words or "re:<regex>" lines).`;
 
 async function main(): Promise<void> {
   const { positionals, values: v } = parseArgs({
@@ -18,19 +22,30 @@ async function main(): Promise<void> {
       "sandbox-runtime": { type: "string" },
       "manager-role": { type: "string" },
       "live-env-names": { type: "string" },
+      public: { type: "boolean" },
+      "deny-file": { type: "string" },
     },
   });
-  if (positionals[0] !== "resolve") {
+  const cmd = positionals[0];
+  if (cmd !== "resolve" && cmd !== "check") {
     console.error(USAGE);
     process.exit(2);
   }
   const liveEnvNames = v["live-env-names"] ? (await readFile(v["live-env-names"], "utf8")).split(/\s+/).filter(Boolean) : undefined;
-  const { json, prompts } = await resolveEffectiveConfig({
+  const opts = {
     dirs: (v.dir?.length ? v.dir : [process.env.ROLES_DIR ?? "roles"]).map((d) => path.resolve(d)),
     liveEnvNames,
     sandboxRuntime: v["sandbox-runtime"] as never,
     managerRole: v["manager-role"],
-  });
+  };
+  if (cmd === "check") {
+    if (v.public && !v["deny-file"]) throw new Error("--public needs --deny-file");
+    const problems = await checkConfig({ ...opts, denyFile: v.public ? v["deny-file"] : undefined });
+    for (const p of problems) console.error(p);
+    if (problems.length) process.exit(1);
+    return void console.log("config ok");
+  }
+  const { json, prompts } = await resolveEffectiveConfig(opts);
   const text = JSON.stringify(json, null, 2) + "\n";
   if (!v.out) return void process.stdout.write(text);
   await mkdir(path.join(v.out, "prompts"), { recursive: true });

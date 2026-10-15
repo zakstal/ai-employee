@@ -1,0 +1,43 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { checkConfig } from "./check.js";
+
+const shipped = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../roles");
+
+/** A one-employee dir whose first role is `r` with extra YAML lines appended to the role. */
+async function cfg(extra = "", header = ""): Promise<string[]> {
+  const dir = await mkdtemp(path.join(tmpdir(), "chk-"));
+  await writeFile(path.join(dir, "e.yaml"), `id: e\nname: E\ndefaultRole: r\n${header}roles:\n  - id: r\n${extra}`);
+  return [dir];
+}
+
+describe("checkConfig", () => {
+  it("passes on the shipped dev.yaml", async () => {
+    expect(await checkConfig({ dirs: [shipped], managerRole: "manager" })).toEqual([]);
+  });
+  it("fails on a dangling canSpawn and names the role", async () => {
+    expect(await checkConfig({ dirs: await cfg("    canSpawn: [ghost]\n") })).toEqual(['e: role r canSpawn names unknown role "ghost"']);
+  });
+  it("fails on a dangling workstream, monitor and manager role", async () => {
+    const header = "workstreams: { w: { entryRole: nope } }\nmonitors: { m: { collector: azure-errors, role: nada } }\n";
+    const p = await checkConfig({ dirs: await cfg("", header), managerRole: "boss" });
+    expect(p).toHaveLength(3);
+  });
+  it("fails on an unknown credential grant", async () => {
+    expect((await checkConfig({ dirs: await cfg("    credentials: [telepathy]\n") }))[0]).toMatch(/unknown credential grant "telepathy"/);
+  });
+  it("fails on an mcp placeholder no credential provides", async () => {
+    const p = await checkConfig({ dirs: await cfg("    mcpServers:\n      s: { command: x, env: { K: '${SOME_TOKEN}' } }\n") });
+    expect(p[0]).toMatch(/mcp server "s"/);
+  });
+  it("--public flags a deny-listed word in a prompt", async () => {
+    const dirs = await cfg("    systemPrompt: contact Acme Corp\n");
+    const deny = path.join(dirs[0]!, "deny.txt");
+    await writeFile(deny, "# comment\nacme corp\n");
+    expect((await checkConfig({ dirs, denyFile: deny }))[0]).toMatch(/deny-list entry "acme corp"/);
+    expect(await checkConfig({ dirs })).toEqual([]);
+  });
+});
