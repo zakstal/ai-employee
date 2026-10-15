@@ -13,7 +13,7 @@ async function taskWorkflowBody(taskId: string, input: TaskInput): Promise<void>
   const ack = await DBOS.runStep(() => s.acknowledge(input), { name: "acknowledge" });
   const spec = await DBOS.runStep(() => s.buildRunSpec(taskId, input), { name: "buildRunSpec" });
   const runtimeName = await DBOS.runStep(() => pickRuntime(input), { name: "pickRuntime" });
-  const handle = await DBOS.runStep(() => s.launchSandbox(spec, runtimeName), { name: "launchSandbox" });
+  const handle = await DBOS.runStep(() => s.launchSandbox(spec, runtimeName, input), { name: "launchSandbox" });
   await DBOS.runStep(() => s.markRunning(taskId, handle), { name: "markRunning" });
   const exit = await DBOS.runStep(() => s.waitForExit(handle, ack, taskId), { name: "waitForExit", retriesAllowed: false });
   const result = await DBOS.runStep(() => s.collectResult(taskId), { name: "collectResult" });
