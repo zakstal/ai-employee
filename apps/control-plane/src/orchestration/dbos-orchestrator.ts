@@ -29,9 +29,10 @@ export class DbosOrchestrator implements Orchestrator {
     if (!row || !(row.status === "queued" || row.status === "running" || row.status === "awaiting_input")) return;
     await DBOS.cancelWorkflow(taskId);
     // The workflow will not reach its finalize step after cancellation, so tear down the sandbox here.
+    // A sandbox that can't be stopped (gone, or in a project we no longer reach) must not keep the task open.
     if (row.run_handle) {
       const rt = deps().runtimes[row.run_handle.adapter];
-      await rt?.cancel(row.run_handle);
+      await rt?.cancel(row.run_handle).catch((e) => console.error(`cancel ${taskId}: sandbox teardown failed`, e));
     }
     await this.ledger.setStatus(taskId, "cancelled");
   }

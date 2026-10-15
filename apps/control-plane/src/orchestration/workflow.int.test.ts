@@ -576,6 +576,16 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       await chatApp.close();
     }, 45_000);
 
+    it("cancel marks a task cancelled even when its sandbox can't be torn down", async () => {
+      const id = "http:dev:orphaned-run";
+      await ledger.createTask(id, { employeeId: "dev", roleId: "assistant", prompt: "orphan", source: { channel: "http" } });
+      await ledger.setStatus(id, "running", { runHandle: { adapter: "gone", externalId: "exec-in-old-project" } });
+      deps().runtimes.gone = { cancel: async () => { throw new Error("7 PERMISSION_DENIED") } } as never;
+      await new DbosOrchestrator(ledger).cancel(id);
+      expect((await ledger.getTask(id))!.status).toBe("cancelled");
+      delete deps().runtimes.gone;
+    });
+
     it("a child whose parent already finished relays its result to the root ClickUp thread (fire-and-forget escalation)", async () => {
       const rootId = "clickup-chat:relay-chan:root";
       await ledger.createTask(rootId, { employeeId: "dev", roleId: "assistant", prompt: "root", source: { channel: "clickup-chat", threadRef: "relay-chan", quiet: true } });
