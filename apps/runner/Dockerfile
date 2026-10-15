@@ -12,8 +12,9 @@ RUN pnpm -r build
 FROM node:22-slim
 ARG TARGETARCH
 # Rarely-changing layers first so app redeploys pull only the last layer.
-COPY apps/runner/toolbelt-dev.sh /tmp/toolbelt.sh
-RUN chmod +x /tmp/toolbelt.sh && /tmp/toolbelt.sh "${TARGETARCH:-$(dpkg --print-architecture)}" && rm /tmp/toolbelt.sh
+# The script stays in the image (base-image contract) so a derived image on another OS base can run it too.
+COPY apps/runner/toolbelt-dev.sh /usr/local/share/ai-employee/toolbelt-dev.sh
+RUN chmod 755 /usr/local/share/ai-employee/toolbelt-dev.sh && /usr/local/share/ai-employee/toolbelt-dev.sh "${TARGETARCH:-$(dpkg --print-architecture)}"
 RUN npm install -g @anthropic-ai/claude-code@2.1.270 @hauptsache.net/clickup-mcp@1.9.0 && npm cache clean --force
 # Claude Code refuses to run as root; node:22-slim ships uid 1000 (`node`).
 RUN mkdir -p /workspace && chown node:node /workspace
