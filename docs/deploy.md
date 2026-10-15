@@ -114,6 +114,7 @@ Variables you may set (`variables.tf`):
 | `env` | `{}` | extra plain env vars; overrides computed ones |
 | `extra_runner_images` | `{}` | more Cloud Run jobs from derived images, see [below](#derived-runner-images-and-bootstrapd) |
 | `secret_shells` | `[]` | Secret Manager secrets created empty; add values with `gcloud secrets versions add` so they never enter state. `infra/gcp-vm` takes the same variable to grant the VM access |
+| `control_plane_service` | `true` | `false` skips the Cloud Run control-plane service and its `allUsers` invoker, for orgs whose policy forbids `allUsers` (the VM is the control plane then) |
 
 After the first apply: `terraform output -raw service_url`, set `PUBLIC_BASE_URL_CLOUD` to it in `.env`, and run `apply.sh` again so runners know where to send events.
 Migrations run when the service boots; there is no separate step.
@@ -302,7 +303,7 @@ These must stay reachable from wherever sandboxes run. Cloud Run jobs call back 
 There is no built-in API token. Options, strongest first:
 
 1. **Do not expose them.** Put the whole service on a private network or VPN and let only the webhook senders in (not possible for ClickUp or Slack, which call from the internet).
-2. **Proxy rules (works on B).** Block the operator routes at Caddy unless the caller is yours. Edit the `Caddyfile` heredoc in `infra/gcp-vm/startup.sh.tftpl` and re-apply. This block was
+2. **Proxy rules (works on B).** Block the operator routes at Caddy unless the caller is yours. Set `api_allow_ips` (space-separated IPs or CIDRs) on `infra/gcp-vm` and re-apply: the Caddyfile then carries a block equivalent to the one below (empty = open). To change the rule itself, edit the `Caddyfile` heredoc in `infra/gcp-vm/startup.sh.tftpl`. The block was
    validated with Caddy 2 and returns 403 for `/tasks`, `/tasks/:id`, `/tasks/:id/events`, `/employees/*`, `/stats`, `/runtime`, `/status` and `/runs/:id/view`, and passes `/health`, `/tasks/recent`, `/runs/:id/events`,
    `/agents*`, `/schedules`, and the three webhook routes:
 

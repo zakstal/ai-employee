@@ -161,3 +161,9 @@ variable "secret_shells" {
   type        = set(string)
   default     = []
 }
+
+variable "control_plane_service" {
+  type        = bool
+  description = "Create the parked Cloud Run control-plane service. Off in orgs that forbid allUsers (iam.allowedPolicyMemberDomains), where the VM stack is the control plane."
+  default     = true
+}
