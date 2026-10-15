@@ -17,6 +17,8 @@ RUN chmod +x /tmp/toolbelt.sh && /tmp/toolbelt.sh "${TARGETARCH:-$(dpkg --print-
 RUN npm install -g @anthropic-ai/claude-code@2.1.270 @hauptsache.net/clickup-mcp@1.9.0 && npm cache clean --force
 # Claude Code refuses to run as root; node:22-slim ships uid 1000 (`node`).
 RUN mkdir -p /workspace && chown node:node /workspace
+# Hook directory for derived images (see docs/base-image-contract.md). Root-owned, not writable by the run's user.
+RUN mkdir -p /etc/ai-employee/bootstrap.d && chmod 755 /etc/ai-employee/bootstrap.d
 # compound-engineering skills (EveryInc, MIT) installed as user skills so `lfg`, `ce-plan`, `ce-work`, ... resolve headless.
 ARG CE_REF=84bdf8c
 RUN git clone -q https://github.com/EveryInc/compound-engineering-plugin /tmp/ce && git -C /tmp/ce checkout -q "$CE_REF" \
