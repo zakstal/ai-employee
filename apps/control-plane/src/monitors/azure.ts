@@ -37,6 +37,8 @@ export interface AzureAuth {
   tenantId?: string | undefined;
   clientId?: string | undefined;
   clientSecret?: string | undefined;
+  /** Federated login: the control plane's own Google identity is exchanged for an Azure token. No secret. */
+  federated?: { tenantId: string; clientId: string; audience: string } | undefined;
 }
 interface Seen {
   n: number;
@@ -63,6 +65,21 @@ export async function getAzureToken(auth: AzureAuth, resource: string, fetchImpl
     const body = new URLSearchParams({ grant_type: "client_credentials", client_id: auth.clientId, client_secret: auth.clientSecret, scope: `${resource.replace(/\/?$/, "/")}.default` });
     const res = await fetchImpl(`https://login.microsoftonline.com/${auth.tenantId}/oauth2/v2.0/token`, { method: "POST", body });
     if (!res.ok) throw new Error(`azure token (sp) ${res.status}`);
+    return ((await res.json()) as { access_token: string }).access_token;
+  }
+  if (auth.federated) {
+    const { tenantId, clientId, audience } = auth.federated;
+    const idRes = await fetchImpl(`http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=${encodeURIComponent(audience)}&format=full`, { headers: { "Metadata-Flavor": "Google" } });
+    if (!idRes.ok) throw new Error(`google id token ${idRes.status}`);
+    const body = new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: clientId,
+      scope: `${resource.replace(/\/?$/, "/")}.default`,
+      client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+      client_assertion: (await idRes.text()).trim(),
+    });
+    const res = await fetchImpl(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, { method: "POST", body });
+    if (!res.ok) throw new Error(`azure token (federated) ${res.status}`);
     return ((await res.json()) as { access_token: string }).access_token;
   }
   if (!auth.brokerUrl || !auth.brokerSecret) throw new Error("no Azure credentials: set AZURE_BROKER_URL/SECRET or AZURE_CLIENT_*");

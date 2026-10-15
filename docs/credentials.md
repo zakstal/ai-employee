@@ -106,3 +106,22 @@ curl -s -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMet
 Isolation: the Google token proves "this is service account X", not "this is employee Y". Employees that share a service account (everything on the shared warm runner, or on one Cloud Run job) can present each other's tokens to any app registration that trusts that account. For real separation give each employee its own Cloud Run jobs and service account (an `extra_runner_images` entry with its own `service_account`), set `sandbox: { jobPrefix: <employee> }` in the employee file so `imageRef` roles use those jobs, and add one federated credential per service account on that employee's app registration.
 
 Azure access tokens from `--federated-token` last about an hour and `az` cannot refresh them. Roles that run longer need a re-login (a later change) or another login kind.
+
+## Delegated Azure login (`broker`)
+
+```yaml
+credentials:
+  azure-user:
+    kind: broker
+    provider: azure
+    url: http://azbroker:8081
+    secret: { secret: azure-broker-secret-alice }   # this employee's key
+    tenantId: "<tenant guid>"
+    subscriptionId: "<subscription guid>"
+```
+
+The broker (`infra/azbroker`) holds one `az login` per employee. Set `BROKER_SECRETS='{"alice":"<key>","bob":"<key>"}'`; each key selects its employee and that employee's login home (`$AZURE_CONFIG_DIR/<employee>`). Log in once per employee: `docker exec -it <broker container> sh -c 'AZURE_CONFIG_DIR=/azure/alice az login --use-device-code'`. The single `BROKER_SECRET` still works as employee `default` using the volume root, so an existing deployment is unchanged. The broker is reachable from the warm runner on the VM network, not from Cloud Run jobs.
+
+## Monitors
+
+A monitor may name one of the employee's `broker` or `federated` credentials with `credential:`; the azure-errors collector then signs in with it. A `federated` one uses the control plane's own Google identity, so its Entra app needs a federated credential for the control plane's service account. Without `credential:` the collector reads the global `AZURE_*` variables, as before.

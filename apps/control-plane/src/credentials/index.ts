@@ -2,6 +2,7 @@ import type { CredentialSpec, Employee, Purpose, Role } from "@ai-employee/core"
 import { roleGrants } from "@ai-employee/core";
 import type { Config } from "../config.js";
 import { legacyEnv } from "./legacy.js";
+import { brokerProvider } from "./broker.js";
 import { federatedProvider } from "./federated.js";
 import { githubAppProvider } from "./github-app.js";
 import { secretProvider } from "./secret.js";
@@ -13,7 +14,7 @@ export { legacyEnv } from "./legacy.js";
 
 /** kind -> provider. Providers import only `types.ts`, so this file can list them without a cycle. */
 const providers = new Map<string, CredentialProvider>(
-  ([secretProvider, githubAppProvider, federatedProvider] as unknown as CredentialProvider[]).map((p) => [p.kind, p]),
+  ([secretProvider, githubAppProvider, federatedProvider, brokerProvider] as unknown as CredentialProvider[]).map((p) => [p.kind, p]),
 );
 export function providerFor(spec: CredentialSpec): CredentialProvider {
   const p = providers.get(spec.kind);

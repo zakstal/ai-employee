@@ -162,3 +162,31 @@ describe("evidence", () => {
     expect(block).toContain("    line1");
   });
 });
+
+describe("monitor credentials", () => {
+  it("uses the federated assertion when the monitor names a federated credential", async () => {
+    const { getAzureToken } = await import("./azure.js");
+    const calls: { url: string; body?: string }[] = [];
+    const f = (async (url: string, init?: RequestInit) => {
+      calls.push({ url: String(url), ...(init?.body ? { body: String(init.body) } : {}) });
+      if (String(url).includes("metadata.google.internal")) return new Response("google.id.token\n");
+      return new Response(JSON.stringify({ access_token: "azure-tok" }));
+    }) as unknown as typeof fetch;
+    const tok = await getAzureToken({ subscriptionId: "s", federated: { tenantId: "t1", clientId: "c1", audience: "api://AzureADTokenExchange" } }, "https://management.azure.com", f);
+    expect(tok).toBe("azure-tok");
+    expect(calls[1]!.url).toBe("https://login.microsoftonline.com/t1/oauth2/v2.0/token");
+    const body = new URLSearchParams(calls[1]!.body);
+    expect(body.get("client_assertion_type")).toBe("urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+    expect(body.get("client_assertion")).toBe("google.id.token");
+    expect(body.get("scope")).toBe("https://management.azure.com/.default");
+  });
+  it("azureAuthFor reads the broker key from the secret store, and falls back to global env without a credential", async () => {
+    const { azureAuthFor } = await import("./tick.js");
+    const employee = { id: "e", credentials: { b: { kind: "broker", provider: "azure", url: "http://azbroker:8081", secret: { secret: "k" }, subscriptionId: "emp-sub" } } } as never;
+    const config = { AZURE_SUBSCRIPTION_ID: "global", AZURE_BROKER_URL: "http://g", AZURE_BROKER_SECRET: "gs", AZURE_TENANT_ID: "", AZURE_CLIENT_ID: "", AZURE_CLIENT_SECRET: "" } as never;
+    const secrets = { get: async (n: string) => (n === "k" ? "key-1" : undefined) };
+    expect(await azureAuthFor(employee, { credential: "b" } as never, config, secrets)).toEqual({ subscriptionId: "emp-sub", brokerUrl: "http://azbroker:8081", brokerSecret: "key-1" });
+    expect(await azureAuthFor(employee, {} as never, config, secrets)).toMatchObject({ subscriptionId: "global", brokerSecret: "gs" });
+    await expect(azureAuthFor(employee, { credential: "nope" } as never, config, secrets)).rejects.toThrow(/must name a broker or federated/);
+  });
+});
