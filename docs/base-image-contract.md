@@ -6,6 +6,7 @@ Derived images (`FROM` the runner image, see [deploy.md](deploy.md#derived-runne
 |---|---|
 | `/app` | the built workspace (`/app/apps/runner/dist`, `node_modules`) |
 | `/usr/local/bin/pg-scratch` | starts a throwaway Postgres in the run's workspace |
+| `/usr/local/share/ai-employee/toolbelt-dev.sh` | installs the dev toolbelt (git, gh, ripgrep, jq, ...) on a Debian or Ubuntu base: `COPY --from=<runner image> ... /tmp/toolbelt.sh`, then run it with the target architecture as its argument |
 | `/usr/local/bin/ai-employee-tools` | MCP server the agent uses to call back into the control plane |
 | uid/gid `1000` (`node`) | the user runs execute as; switch to `USER 0` only to install, then switch back |
 | `WORKDIR /workspace` | where repos are cloned and the agent works |
