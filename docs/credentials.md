@@ -125,3 +125,13 @@ The broker (`infra/azbroker`) holds one `az login` per employee. Set `BROKER_SEC
 ## Monitors
 
 A monitor may name one of the employee's `broker` or `federated` credentials with `credential:`; the azure-errors collector then signs in with it. A `federated` one uses the control plane's own Google identity, so its Entra app needs a federated credential for the control plane's service account. Without `credential:` the collector reads the global `AZURE_*` variables, as before.
+
+## Managing secrets
+
+```bash
+node apps/control-plane/dist/cli/credentials.js set   <employee> <grant> [--env NAME] [--from-file key.pem] --project <gcp project>
+node apps/control-plane/dist/cli/credentials.js list  <employee> --project <gcp project>
+node apps/control-plane/dist/cli/credentials.js check <employee> [grant] --project <gcp project>
+```
+
+`set` reads the value from stdin or `--from-file` (never argv) and adds a new Secret Manager version for the secret the login references (`--env` picks one when a login has several). The secret must already exist as an empty shell. `list` shows each login, its env names and the latest version of its secrets. `check` does the real resolve (it mints a GitHub App token, for instance) and prints env names and expiry, never values; it exits 1 on failure. All take `--dir <config dir>`; `check` takes `--store env` to read `SECRET_<NAME>` instead of Secret Manager.
