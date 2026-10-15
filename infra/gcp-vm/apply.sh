@@ -7,7 +7,7 @@ set -a; . ../../.env; set +a
 if ! grep -q "^AZURE_BROKER_SECRET=" ../../.env; then echo "AZURE_BROKER_SECRET=$(openssl rand -base64 32 | tr -d "=+/")" >> ../../.env; set -a; . ../../.env; set +a; fi
 export CLOUDSDK_CORE_ACCOUNT="${GCP_ACCOUNT:-you@example.com}"
 CP_TAG=${1:?control-plane image tag}; RUNNER_TAG=${2:?runner image tag}; shift 2
-REPO=us-central1-docker.pkg.dev/${GCP_PROJECT:-my-gcp-project}/ai-employee
+REPO=us-central1-docker.pkg.dev/${GCP_PROJECT:?set GCP_PROJECT in .env}/ai-employee
 
 # RUNNER_TOKEN is the shared secret between the control plane and the warm runner's
 # HTTP API. Generate and persist one into ../../.env if it doesn't exist yet, so
@@ -19,12 +19,12 @@ if ! grep -q '^RUNNER_TOKEN=' ../../.env 2>/dev/null; then
 export CLOUDSDK_CORE_ACCOUNT="${GCP_ACCOUNT:-you@example.com}"
 fi
 
-export TF_VAR_project_id=${GCP_PROJECT:-my-gcp-project} \
+export TF_VAR_project_id=${GCP_PROJECT:?set GCP_PROJECT in .env} \
   TF_VAR_control_plane_image=$REPO/control-plane:$CP_TAG TF_VAR_runner_image=$REPO/runner-ops:$RUNNER_TAG \
   TF_VAR_runner_token="$RUNNER_TOKEN" \
   TF_VAR_azbroker_image="${AZBROKER_IMAGE:-}" TF_VAR_azure_broker_secret="${AZURE_BROKER_SECRET:-}" \
   TF_VAR_azure_tenant_id="${AZURE_TENANT_ID:-}" TF_VAR_azure_subscription_id="${AZURE_SUBSCRIPTION_ID:-}" \
-  TF_VAR_cloudsql_connection_name="${GCP_PROJECT:-my-gcp-project}:us-central1:ai-employee-pg" \
+  TF_VAR_cloudsql_connection_name="${GCP_PROJECT:?set GCP_PROJECT in .env}:us-central1:ai-employee-pg" \
   TF_VAR_env="{\"DEFAULT_EMPLOYEE_ID\":\"dev\",\"CLICKUP_TEAM_ID\":\"${CLICKUP_TEAM_ID:-}\",\"LOG_LEVEL\":\"info\",\"ALERT_CHANNEL_ID\":\"${ALERT_CHANNEL_ID:-}\"}"
 terraform apply -input=false "$@"
 
