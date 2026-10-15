@@ -1,8 +1,9 @@
-import { resolveRole, type Role, type ResultEvent, type RunExit, type RunHandle, type RunSpec, type StartedEvent, type TaskInput } from "@ai-employee/core";
+import { resolveRole, roleGrants, type Employee, type Role, type ResultEvent, type RunExit, type RunHandle, type RunSpec, type StartedEvent, type TaskInput } from "@ai-employee/core";
 import type { Config } from "../config.js";
 import { deps } from "./deps.js";
 import { requestWake, shouldWake } from "../manager/tick.js";
 import { BOT_MARKER } from "../clickup/chat.js";
+import { grantPurposes, legacyEnv } from "../credentials/index.js";
 
 /**
  * Steps: plain async functions with side effects. Engine-free. Each must be
@@ -24,7 +25,7 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
     TASK_ID: taskId,
     GIT_AUTHOR_NAME: employee.name,
     TASK_PROMPT: await enrichPrompt(input, sessionId !== null),
-    SYSTEM_PROMPT: `${role.systemPrompt.trimEnd()}\n\n${environmentFooter(role)}`,
+    SYSTEM_PROMPT: `${role.systemPrompt.trimEnd()}\n\n${environmentFooter(role, employee)}`,
     ALLOWED_TOOLS: role.allowedTools.join(","),
     DISALLOWED_TOOLS: role.disallowedTools.join(","),
     MAX_TURNS: String(role.maxTurns),
@@ -35,7 +36,7 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
     ...(role.repos.length ? { REPOS: JSON.stringify(role.repos) } : {}),
     ...(conversationId ? { WORKSPACE_KEY: `conv-${conversationId}` } : {}),
     ...(sessionId ? { RESUME_SESSION_ID: sessionId } : {}),
-    ...resolveCredentials(role.credentials),
+    ...resolveCredentials(roleGrants(role)),
   };
   // Built-in tools the agent may call back into the control plane with (per-run token, scoped to this task).
   const builtinServers: Record<string, unknown> = {};
@@ -78,14 +79,15 @@ export function runtimeFor(role: Role | undefined, defaultRuntime: string, regis
  * tool allowlist. Models otherwise infer capabilities from earlier chat turns or from tool NAMES
  * ("no Azure tool") — az/gh/git are shell commands behind Bash, not named tools.
  */
-export function environmentFooter(role: Role): string {
+export function environmentFooter(role: Role, employee?: Employee): string {
   const lines: string[] = ["## Your environment (authoritative — do not infer capabilities from earlier messages)"];
   const bash = role.allowedTools.filter((t) => t.startsWith("Bash("));
-  if (role.credentials.includes("azure-user") || role.credentials.includes("azure")) {
+  const purposes = grantPurposes(employee, role);
+  if (purposes.has("azure")) {
     lines.push("- Azure CLI: `az` is installed and ALREADY LOGGED IN. Run it through Bash (e.g. `az group list`). Read-only: show/list/get/query/monitor work; mutating verbs are refused by a guard.");
   }
-  if (role.credentials.includes("github")) lines.push("- GitHub: `gh` and `git` are authenticated. Branch, commit, `gh pr create`. Never push to main, never merge.");
-  if (role.credentials.includes("clickup")) lines.push("- ClickUp: MCP tools `mcp__clickup__*` (search/get tasks, comments). Replies you write are posted to the originating task or channel automatically.");
+  if (purposes.has("github")) lines.push("- GitHub: `gh` and `git` are authenticated. Branch, commit, `gh pr create`. Never push to main, never merge.");
+  if (purposes.has("clickup")) lines.push("- ClickUp: MCP tools `mcp__clickup__*` (search/get tasks, comments). Replies you write are posted to the originating task or channel automatically.");
   if (role.repos.length) lines.push(`- Repos cloned under /workspace: ${role.repos.map((r) => r.url.split("/").pop()?.replace(/\.git$/, "")).join(", ")}.`);
   if (role.capabilities.includes("agents")) lines.push("- Delegation: `spawn_agent`, `start_workstream`, `wait_for`, `agent_events` (peek at a child's progress), `cancel_agent`, `list_agents`, `ask_human` (MCP server `ai_employee`).");
   if (role.capabilities.includes("schedules")) lines.push("- Schedules: `create_schedule`, `list_schedules`, `delete_schedule`.");
@@ -99,53 +101,10 @@ export function environmentFooter(role: Role): string {
   return lines.join("\n");
 }
 
-/**
- * ponytail: static env from control-plane config. Replace per-grant with
- * short-lived minted tokens (GCP STS, GitHub App installation token) when a
- * second credential type shows up.
- */
+/** Static env for built-in grants, read from the control plane's own config. Per-employee logins go through `resolveGrantEnv`. */
 export function resolveCredentials(grants: string[], cfg?: Config): Record<string, string> {
   const config = cfg ?? deps().config;
-  const out: Record<string, string> = {};
-  const put = (k: keyof typeof config, as = k as string) => {
-    const v = config[k];
-    if (typeof v === "string" && v) out[as] = v;
-  };
-  for (const g of grants) {
-    switch (g) {
-      case "anthropic": put("ANTHROPIC_API_KEY"); break;
-      case "claude-subscription": put("CLAUDE_CODE_OAUTH_TOKEN"); break;
-      case "clickup": put("CLICKUP_API_TOKEN"); put("CLICKUP_TEAM_ID"); break;
-      // NPM_GITHUB_TOKEN too: repos with private @scope packages read it from their committed .npmrc,
-      // and without it `npm install` 401s, so the agent cannot run any of the repo's own checks.
-      case "github": put("GH_TOKEN"); put("GH_TOKEN", "NPM_GITHUB_TOKEN"); break;
-      case "azure":
-        // az login --service-principal -u $AZURE_CLIENT_ID -p $AZURE_CLIENT_SECRET --tenant $AZURE_TENANT_ID (runner does this at start when present)
-        put("AZURE_CLIENT_ID"); put("AZURE_TENANT_ID"); put("AZURE_CLIENT_SECRET"); put("AZURE_SUBSCRIPTION_ID");
-        break;
-      case "azure-user":
-        // Runner does `az login --identity` against the broker; tokens carry the logged-in human's rights.
-        if (config.AZURE_BROKER_URL && config.AZURE_BROKER_SECRET) {
-          out.IDENTITY_ENDPOINT = `${config.AZURE_BROKER_URL}/token`;
-          out.IDENTITY_HEADER = config.AZURE_BROKER_SECRET;
-          out.MSI_ENDPOINT = out.IDENTITY_ENDPOINT;
-          out.MSI_SECRET = out.IDENTITY_HEADER;
-          put("AZURE_TENANT_ID");
-          put("AZURE_SUBSCRIPTION_ID");
-        }
-        break;
-      case "vertex":
-        out.CLAUDE_CODE_USE_VERTEX = "1";
-        for (const k of ["ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION"]) {
-          const v = process.env[k];
-          if (v) out[k] = v;
-        }
-        break;
-      default:
-        throw new Error(`unknown credential grant "${g}"`);
-    }
-  }
-  return out;
+  return Object.assign({}, ...grants.map((g) => legacyEnv(g, config)));
 }
 
 /**
