@@ -1,0 +1,57 @@
+title = "ai-employee leak guard"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "clickup-api-token"
+description = "ClickUp personal API token"
+regex = '''pk_[0-9]{6,}_[A-Z0-9]{20,}'''
+keywords = ["pk_"]
+
+[[rules]]
+id = "anthropic-key"
+description = "Anthropic API key or OAuth token"
+regex = '''sk-ant-[A-Za-z0-9]*-?[A-Za-z0-9_-]{20,}'''
+keywords = ["sk-ant-"]
+
+[[rules]]
+id = "github-token"
+description = "GitHub personal/OAuth/app/refresh token"
+regex = '''(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,}'''
+keywords = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"]
+
+[[rules]]
+id = "private-key-block"
+description = "PEM private key (GitHub App keys, service accounts, etc.)"
+regex = '''-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY( BLOCK)?-----'''
+keywords = ["private key"]
+
+[[rules]]
+id = "azure-client-secret"
+description = "Azure AD client secret"
+regex = '''[A-Za-z0-9~._-]{3}8Q~[A-Za-z0-9~._-]{34}'''
+keywords = ["8q~"]
+
+[[rules]]
+id = "postgres-url-with-password"
+description = "Postgres connection URL embedding a password"
+regex = '''postgres(?:ql)?://[^:/\s@]+:[^@\s/]{4,}@'''
+keywords = ["postgres"]
+[rules.allowlist]
+regexes = ['''postgres(?:ql)?://[^:/\s@]+:(postgres|password|test|dev|changeme|CHANGE_ME|\$\{[A-Za-z_.]+\}|\$[A-Za-z_]+|<[^>]+>)@''']
+
+[[rules]]
+id = "generic-high-entropy-secret"
+description = "Assignment of a high-entropy value to a secret-like name"
+regex = '''(?i)(secret|token|password|passwd|api[_-]?key|private[_-]?key)["']?\s*[:=]\s*["'][A-Za-z0-9+/_~-]{24,}["']'''
+entropy = 3.5
+keywords = ["secret", "token", "password", "passwd", "key"]
+
+# Reviewed false positives.
+[allowlist]
+description = "reviewed false positives"
+regexes = [
+  # Slack's published example signing secret used in verify.test.ts (public in Slack docs, not a credential).
+  '''8f742231b10e8888abcd99yyyzzz85a5''',
+]

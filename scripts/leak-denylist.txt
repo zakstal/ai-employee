@@ -1,0 +1,5 @@
+# Public denylist: generic terms only. NEVER put a private value here — this file is published.
+# Private terms (company/project names, account ids, hosts, IPs) are loaded at run time from:
+#   - the LEAK_DENYLIST environment variable (newline-separated; in CI a GitHub Actions secret), and
+#   - the file in LEAK_DENYLIST_FILE (default ~/.config/ai-employee/leak-denylist.txt), outside the repo.
+/Users/

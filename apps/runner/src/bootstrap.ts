@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 
 /**
  * Pre-spawn tool logins driven purely by injected env. Non-fatal: a failed
@@ -41,6 +41,18 @@ export function bootstrapTools(env: NodeJS.ProcessEnv, run = spawnSync): string[
     run("git", ["config", "--global", "user.name", env.GIT_AUTHOR_NAME ?? "Dev Bot"], { env, stdio: "ignore" });
     run("git", ["config", "--global", "user.email", env.GIT_AUTHOR_EMAIL ?? "devbot@users.noreply.github.com"], { env, stdio: "ignore" });
     notes.push("git: credential helper → gh");
+  }
+
+  // Image-specific setup hook: derived images drop executables into this dir (default /etc/ai-employee/bootstrap.d)
+  // and each runs once, in name order, before the agent starts. Each one's last stdout line is reported.
+  const hookDir = env.BOOTSTRAP_D_DIR ?? "/etc/ai-employee/bootstrap.d";
+  if (existsSync(hookDir)) {
+    for (const name of readdirSync(hookDir).sort()) {
+      const file = `${hookDir}/${name}`;
+      if (!statSync(file).isFile() || !(statSync(file).mode & 0o111)) continue;
+      const r = run(file, [], { env, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 60_000 });
+      notes.push(String(r.stdout ?? "").trim().split("\n").pop() || `bootstrap.d/${name}: failed: ${String(r.stderr ?? "").trim().slice(0, 300) || r.error?.message || "unknown"}`);
+    }
   }
 
   // Clone the role's repos into the workspace.

@@ -134,6 +134,11 @@ URLs at `terraform output -raw service_url`.
 - **Runner has no extra IAM roles** beyond its bare service account, per
   spec — its actual sandbox permissions aren't decided yet.
 
+## Extra runner images
+
+`runner` and `runner-ops` are always created (5400s ceiling per run). Add images of your own (built FROM the runner)
+with `extra_runner_images`, each with its own cpu/memory/timeout; see `variables.tf` for the shape.
+
 ## Cost note (us-central1, roughly)
 
 - Cloud Run control plane, `min_instance_count = 1`, 1 vCPU / 1Gi, always-

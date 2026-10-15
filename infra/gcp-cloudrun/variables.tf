@@ -137,3 +137,19 @@ variable "runner_ops_image" {
   description = "Full Artifact Registry URL of the runner-ops image (runner + Azure CLI)."
   type        = string
 }
+
+variable "extra_runner_images" {
+  description = <<-EOT
+    Additional runner images, each becomes its own Cloud Run Job named "<name>-<key>" (the control plane picks the Job
+    from the image basename, so the key must equal the image's repository basename, e.g. key "runner-custom" for
+    ".../runner-custom:tag"). Build them FROM the public runner image. Example:
+      extra_runner_images = { runner-custom = { image = "REGION-docker.pkg.dev/PROJECT/ai-employee/runner-custom:tag", cpu = "8", memory = "16Gi", timeout = "14400s" } }
+  EOT
+  type = map(object({
+    image   = string
+    cpu     = string
+    memory  = string
+    timeout = string
+  }))
+  default = {}
+}

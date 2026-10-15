@@ -1,0 +1,23 @@
+name: leak-guard
+on:
+  push:
+  pull_request:
+jobs:
+  leak-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Denylist + blocked file types (whole tree)
+        env: { LEAK_DENYLIST: "${{ secrets.LEAK_DENYLIST }}" }
+        run: node scripts/leak-check.mjs
+      - name: Denylist (added lines of this PR)
+        if: github.event_name == 'pull_request'
+        env: { LEAK_DENYLIST: "${{ secrets.LEAK_DENYLIST }}" }
+        run: node scripts/leak-check.mjs --diff "origin/${{ github.base_ref }}"
+      - name: gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo zricethezav/gitleaks:v8.21.2 \
+            detect --source /repo --config /repo/.gitleaks.toml --redact --no-banner --verbose

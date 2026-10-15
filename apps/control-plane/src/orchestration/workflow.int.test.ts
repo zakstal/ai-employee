@@ -204,7 +204,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
   }, 30_000);
 
   it("ClickUp chat: shared-secret header, history in prompt, bot-marked reply, loop guard", async () => {
-    const cfg = loadConfig({ DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, CLICKUP_CHAT_SECRET: "s3", CLICKUP_TEAM_ID: "10636930", SANDBOX_RUNTIME: "local" });
+    const cfg = loadConfig({ DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, CLICKUP_CHAT_SECRET: "s3", CLICKUP_TEAM_ID: "1234567", SANDBOX_RUNTIME: "local" });
     const chatApp = buildServer({ config: cfg, ledger, orchestrator: new DbosOrchestrator(ledger), employees: new Map([[employee.id, employee]]), slack, clickup });
     clickup.history.set("ch1", [
       { id: "m2", text: "hi bot, remember 42", userId: "1" },
@@ -468,7 +468,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
     it("agents stay visible to the next message in the same chat, not just the task that spawned them", async () => {
       // Reproduces 2026-09-18: each chat message is its own task, so scoping agent lookups to the calling
       // task made a resumed session report that its own subagents had "silently dropped".
-      const chatCfg = loadConfig({ DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, CLICKUP_CHAT_SECRET: "vis", CLICKUP_TEAM_ID: "10636930", SANDBOX_RUNTIME: "local" });
+      const chatCfg = loadConfig({ DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, CLICKUP_CHAT_SECRET: "vis", CLICKUP_TEAM_ID: "1234567", SANDBOX_RUNTIME: "local" });
       const chatApp = buildServer({ config: chatCfg, ledger, orchestrator: new DbosOrchestrator(ledger), employees: new Map([[employee.id, employee]]), slack, clickup });
       const post = (id: string, content: string) =>
         chatApp.inject({ method: "POST", url: "/clickup/chat", headers: { "x-bot-secret": "vis" }, payload: { id, channel_id: "vis-chan", content } });
@@ -537,7 +537,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       expect(askMsgs[0]!.text.startsWith("\u{1F916} ")).toBe(true);
       expect(askMsgs[0]!.text).toBe("\u{1F916} what should I do?");
 
-      const cfg = loadConfig({ DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, CLICKUP_CHAT_SECRET: "ask-secret", CLICKUP_TEAM_ID: "10636930", SANDBOX_RUNTIME: "local" });
+      const cfg = loadConfig({ DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, CLICKUP_CHAT_SECRET: "ask-secret", CLICKUP_TEAM_ID: "1234567", SANDBOX_RUNTIME: "local" });
       const chatApp = buildServer({ config: cfg, ledger, orchestrator: new DbosOrchestrator(ledger), employees: new Map([[employee.id, employee]]), slack, clickup });
       const reply = await chatApp.inject({
         method: "POST", url: "/clickup/chat", headers: { "x-bot-secret": "ask-secret" },

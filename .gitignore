@@ -11,3 +11,8 @@ dist
 .terraform.lock.hcl
 .env.bak*
 *.tfplan
+__pycache__/
+*.pyc
+.env.*
+!.env.example
+!*.tfvars.example

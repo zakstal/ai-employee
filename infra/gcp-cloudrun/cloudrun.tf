@@ -150,10 +150,11 @@ resource "google_cloud_run_v2_service_iam_member" "public_invoker" {
 # so these limits are what every Cloud Run run actually gets. 4Gi killed an implement run part-way through
 # a monorepo test suite (2026-09-18, "Container terminated on signal 7").
 locals {
-  runner_jobs = {
-    runner     = { image = var.runner_image, cpu = "4", memory = "8Gi" }
-    runner-ops = { image = var.runner_ops_image, cpu = "4", memory = "8Gi" }
-  }
+  runner_jobs = merge({
+    # runner: 16Gi was set by hand (gcloud) on a live job before it was codified here.
+    runner     = { image = var.runner_image, cpu = "4", memory = "16Gi", timeout = "5400s" }
+    runner-ops = { image = var.runner_ops_image, cpu = "4", memory = "8Gi", timeout = "5400s" }
+  }, var.extra_runner_images)
 }
 
 resource "google_cloud_run_v2_job" "runner" {
@@ -166,8 +167,8 @@ resource "google_cloud_run_v2_job" "runner" {
   template {
     template {
       service_account = google_service_account.runner.email
-      # Per-run timeout comes from the role via execution overrides; this is only the ceiling for one.
-      timeout     = "5400s"
+      # Per-run timeout comes from the role via execution overrides; this is only the ceiling for one (per job, see runner_jobs).
+      timeout     = each.value.timeout
       max_retries = 0
 
       containers {
