@@ -16,6 +16,7 @@ import { reconcileSchedules } from "./schedules/reconcile.js";
 import { loadEmployees } from "./roles/load.js";
 import { HttpSlackClient } from "./slack/client.js";
 import { HttpClickUpClient } from "./clickup/client.js";
+import { HttpTelegramClient } from "./telegram/client.js";
 // Side-effect import: registers the cron-tick scheduled workflow before DBOS.launch().
 import "./orchestration/schedule-workflow.js";
 
@@ -52,17 +53,18 @@ async function main(): Promise<void> {
   }
   const slack = new HttpSlackClient(config.SLACK_BOT_TOKEN);
   const clickup = new HttpClickUpClient(config.CLICKUP_API_TOKEN);
+  const telegram = new HttpTelegramClient(config.TELEGRAM_BOT_TOKEN);
   const orchestrator = new DbosOrchestrator(ledger);
   if (config.SECRET_STORE === "gcp" && !config.GCP_PROJECT) throw new Error("SECRET_STORE=gcp requires GCP_PROJECT");
   const secrets = config.SECRET_STORE === "gcp" ? new GcpSecretStore(config.GCP_PROJECT) : new EnvSecretStore();
-  setWorkflowDeps({ config, ledger, employees, runtimes, slack, clickup, secrets, orchestrator });
+  setWorkflowDeps({ config, ledger, employees, runtimes, slack, clickup, telegram, secrets, orchestrator });
 
   DBOS.setConfig({ name: "ai-employee", systemDatabaseUrl: config.DBOS_SYSTEM_DATABASE_URL });
   registerDigestWorkflow(config);
   registerUsageWorkflow(config);
   await DBOS.launch();
 
-  const app = buildServer({ config, ledger, orchestrator, employees, slack, clickup });
+  const app = buildServer({ config, ledger, orchestrator, employees, slack, clickup, telegram });
   // Dual-stack where available, IPv4 otherwise.
   try {
     await app.listen({ port: config.PORT, host: "::" });

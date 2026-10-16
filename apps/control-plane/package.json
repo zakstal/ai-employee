@@ -10,6 +10,7 @@
     "migrate": "tsx src/db/migrate.ts",
     "config": "node dist/cli/config.js",
     "credentials": "node dist/cli/credentials.js",
+    "telegram": "node dist/cli/telegram.js",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js"
   },

@@ -18,9 +18,9 @@ export type TaskStatus =
   | "unknown";
 
 export interface TaskSource {
-  channel: "slack" | "http" | "clickup" | "clickup-chat" | "cron" | "azure" | "github" | "child";
+  channel: "slack" | "http" | "clickup" | "clickup-chat" | "telegram" | "cron" | "azure" | "github" | "child";
   conversationId?: string;
-  /** Channel-native thread reference, e.g. Slack `channel:thread_ts`, ClickUp task id, ClickUp chat channel id. */
+  /** Channel-native thread reference, e.g. Slack `channel:thread_ts`, ClickUp task id, ClickUp chat channel id, Telegram chat id. */
   threadRef?: string;
   /** Channel-native id of the message/comment that triggered the task (for reactions / acks). */
   messageRef?: string;

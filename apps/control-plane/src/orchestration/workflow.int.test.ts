@@ -17,6 +17,7 @@ import { Ledger } from "../db/ledger.js";
 import { buildServer } from "../http/server.js";
 import { NoopSlackClient } from "../slack/client.js";
 import { NoopClickUpClient } from "../clickup/client.js";
+import { NoopTelegramClient } from "../telegram/client.js";
 import { fireDueSchedules } from "../schedules/tick.js";
 import { resetTestDatabases, TEST_DB_URL, TEST_DBOS_URL } from "../test-support.js";
 import { EnvSecretStore } from "../credentials/index.js";
@@ -92,6 +93,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
   let app: ReturnType<typeof buildServer>;
   let slack: NoopSlackClient;
   let clickup: NoopClickUpClient;
+  let telegram: NoopTelegramClient;
   let ledger: Ledger;
   let baseUrl: string;
 
@@ -102,17 +104,18 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
     await ledger.ensureEmployee(employee.id, employee.name);
     slack = new NoopSlackClient();
     clickup = new NoopClickUpClient();
+    telegram = new NoopTelegramClient();
     const employees = new Map([[employee.id, employee]]);
     const config = loadConfig({ DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, SANDBOX_RUNTIME: "local", PUBLIC_BASE_URL: "http://127.0.0.1:1", MANAGER_ROLE: "manager", MANAGER_HEARTBEAT_MIN: "0" });
     const runtimes = { local: new LocalProcessRuntime(fakeRunnerCommand) };
 
     const orchestrator = new DbosOrchestrator(ledger);
-    app = buildServer({ config, ledger, orchestrator, employees, slack, clickup });
+    app = buildServer({ config, ledger, orchestrator, employees, slack, clickup, telegram });
     await app.listen({ port: 0, host: "127.0.0.1" });
     const addr = app.server.address();
     baseUrl = typeof addr === "object" && addr ? `http://127.0.0.1:${addr.port}` : "";
     // Steps read PUBLIC_BASE_URL from deps → point it at the ephemeral port.
-    setWorkflowDeps({ config: { ...config, PUBLIC_BASE_URL: baseUrl }, ledger, employees, runtimes, slack, clickup, secrets: new EnvSecretStore(), orchestrator });
+    setWorkflowDeps({ config: { ...config, PUBLIC_BASE_URL: baseUrl }, ledger, employees, runtimes, slack, clickup, telegram, secrets: new EnvSecretStore(), orchestrator });
 
     DBOS.setConfig({ name: "ai-employee-test", systemDatabaseUrl: TEST_DBOS_URL });
     await DBOS.launch();
@@ -292,6 +295,90 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
     expect(await ledger.getConversationSession(convId)).toBe("sess-clickup-chat:ch1:m5");
     await chatApp.close();
   }, 45_000);
+
+  describe("telegram channel", () => {
+    const tgCfg = (over: Record<string, string> = {}) =>
+      loadConfig({ DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, SANDBOX_RUNTIME: "local", TELEGRAM_BOT_TOKEN: "fake-telegram-token", TELEGRAM_WEBHOOK_SECRET: "tg-secret", TELEGRAM_ALLOWED_CHAT_IDS: "7001, 7002", ...over });
+    const tgApp = (cfg = tgCfg()) => buildServer({ config: cfg, ledger, orchestrator: new DbosOrchestrator(ledger), employees: new Map([[employee.id, employee]]), slack, clickup, telegram });
+    const update = (id: number, text: string, chat = 7001) => ({ update_id: id, message: { message_id: id, text, chat: { id: chat, type: "private" } } });
+    const hdr = { "x-telegram-bot-api-secret-token": "tg-secret" };
+
+    it("verifies the secret, enforces the allowlist, dedupes, and ignores non-text updates", async () => {
+      const a = tgApp();
+      const post = (payload: unknown, headers: Record<string, string> = hdr) => a.inject({ method: "POST", url: "/webhooks/telegram", payload: payload as object, headers });
+      expect((await post(update(1, "x"), {})).statusCode).toBe(401);
+      expect((await post(update(1, "x"), { "x-telegram-bot-api-secret-token": "nope" })).statusCode).toBe(401);
+
+      const before = telegram.messages.length;
+      const stranger = await post(update(2, "hello?", 9999));
+      expect(stranger.statusCode).toBe(200);
+      expect(stranger.json()).toEqual({ ok: true, ignored: true });
+      expect((await ledger.getTask("telegram:2"))).toBeUndefined();
+      expect(telegram.messages).toHaveLength(before); // strangers are never answered
+
+      expect((await post({ update_id: 3, edited_message: { message_id: 1 } })).json()).toEqual({ ok: true, ignored: true });
+      expect((await post({ update_id: 4, message: { message_id: 4, photo: [], chat: { id: 7001, type: "private" } } })).json()).toEqual({ ok: true, ignored: true });
+
+      const first = await post(update(5, "ping"));
+      expect(first.json()).toMatchObject({ ok: true, taskId: "telegram:5", started: true });
+      await waitFor("telegram:5", ["done"]);
+      const again = await post(update(5, "ping")); // Telegram retry
+      expect(again.json()).toEqual({ ok: true, duplicate: true });
+      await a.close();
+    }, 45_000);
+
+    it("is off (404) without a bot token", async () => {
+      const a = tgApp(tgCfg({ TELEGRAM_BOT_TOKEN: "" }));
+      expect((await a.inject({ method: "POST", url: "/webhooks/telegram", payload: update(6, "x"), headers: hdr })).statusCode).toBe(404);
+      await a.close();
+    });
+
+    it("a message becomes a telegram task: placeholder edited into the answer, and the next message resumes the same conversation", async () => {
+      const a = tgApp();
+      const post = (id: number, text: string) => a.inject({ method: "POST", url: "/webhooks/telegram", payload: update(id, text, 7002), headers: hdr });
+      expect((await post(10, "remember 42")).statusCode).toBe(200);
+      const t = await waitFor("telegram:10", ["done"]);
+      expect(t.source).toMatchObject({ channel: "telegram", threadRef: "7002", messageRef: "10" });
+      expect(t.role_id).toBe(employee.defaultRole);
+      expect((t.result as { text: string }).text).toContain("echo: remember 42");
+      // placeholder posted, then edited into the final answer: still exactly one message in this chat
+      const mine = telegram.messages.filter((m) => m.chatId === "7002");
+      expect(mine).toHaveLength(1);
+      expect(mine[0]!.text).toContain("echo: remember 42");
+
+      const convId = t.conversation_id!;
+      expect(await ledger.getConversationSession(convId)).toBe("sess-telegram:10");
+      await post(11, "and now?");
+      const t2 = await waitFor("telegram:11", ["done"]);
+      expect(t2.conversation_id).toBe(convId);
+      expect((t2.result as { text: string }).text).toContain("resume=sess-telegram:10");
+      expect((t2.result as { text: string }).text).toContain(`ws=conv-${convId}`);
+      await a.close();
+    }, 45_000);
+
+    it("ask/answer: a child asks, the question lands in the Telegram chat, and the owner's next message routes back to it", async () => {
+      const rootId = "telegram:ask-root";
+      await ledger.createTask(rootId, { employeeId: "dev", roleId: "assistant", prompt: "root prompt", source: { channel: "telegram", threadRef: "7001" } });
+      const rootHeaders = { authorization: `Bearer ${await ledger.issueRunToken(rootId, 600)}`, "x-task-id": rootId };
+      const spawn = await app.inject({ method: "POST", url: "/agents", headers: rootHeaders, payload: { role: "ops", brief: "asker child" } });
+      const { agentId } = spawn.json() as { agentId: string };
+      const agentHeaders = { authorization: `Bearer ${await ledger.issueRunToken(agentId, 600)}`, "x-task-id": agentId };
+
+      const before = telegram.messages.length;
+      expect((await app.inject({ method: "POST", url: "/agents/self/ask", headers: agentHeaders, payload: { question: "which branch?" } })).statusCode).toBe(202);
+      expect((await ledger.getTask(agentId))!.status).toBe("awaiting_input");
+      expect(telegram.messages.slice(before)).toEqual([{ id: expect.any(String), chatId: "7001", text: "which branch?" }]);
+
+      const a = tgApp();
+      const reply = await a.inject({ method: "POST", url: "/webhooks/telegram", headers: hdr, payload: update(20, "main", 7001) });
+      expect((reply.json() as { routedTo?: string }).routedTo).toBe(agentId);
+      await a.close();
+
+      const answer = await app.inject({ method: "GET", url: "/agents/self/answer", headers: agentHeaders });
+      expect((answer.json() as { answer: string }).answer).toBe("main");
+      expect((await ledger.getTask("telegram:20"))).toBeUndefined(); // answered the question, did not start a task
+    }, 30_000);
+  });
 
   describe("agent-creatable schedules", () => {
     /** Real task + a real run token (agent auth), scoped to whichever role the task carries. */

@@ -3,6 +3,7 @@ import type { Ledger } from "../db/ledger.js";
 import type { Config } from "../config.js";
 import type { SlackClient } from "../slack/client.js";
 import type { ClickUpClient } from "../clickup/client.js";
+import { NoopTelegramClient, type TelegramClient } from "../telegram/client.js";
 import type { SecretStore } from "../credentials/types.js";
 
 /**
@@ -16,6 +17,8 @@ export interface WorkflowDeps {
   runtimes: Record<string, SandboxRuntime>;
   slack: SlackClient;
   clickup: ClickUpClient;
+  /** Optional so existing wiring keeps working; steps fall back to a no-op client. */
+  telegram?: TelegramClient;
   /** Where per-employee `secret:` credential references are read. */
   secrets: SecretStore;
   /** Used by the cron tick (fireDueSchedules) to start tasks. */
@@ -30,3 +33,6 @@ export function deps(): WorkflowDeps {
   if (!current) throw new Error("workflow deps not configured");
   return current;
 }
+
+const noopTelegram = new NoopTelegramClient();
+export const telegramClient = (): TelegramClient => deps().telegram ?? noopTelegram;

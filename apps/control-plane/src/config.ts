@@ -38,6 +38,18 @@ const Env = z.object({
   CLICKUP_CHAT_SECRET: z.string().default(""),
   /** How many prior channel messages to include as conversation memory. */
   CLICKUP_CHAT_HISTORY: z.coerce.number().int().min(0).max(100).default(20),
+  /** Telegram bot token from @BotFather. Empty = the Telegram channel is off. */
+  TELEGRAM_BOT_TOKEN: z.string().default(""),
+  /** The secret_token given to setWebhook; Telegram echoes it in X-Telegram-Bot-Api-Secret-Token. */
+  TELEGRAM_WEBHOOK_SECRET: z.string().default(""),
+  /** Comma-separated numeric chat ids that may talk to the employee. Messages from any other chat are ignored. */
+  TELEGRAM_ALLOWED_CHAT_IDS: z.string().default("").transform((v, ctx) => {
+    const ids = v.split(",").map((s) => s.trim()).filter(Boolean);
+    if (ids.some((id) => !/^-?\d+$/.test(id))) ctx.addIssue({ code: "custom", message: "TELEGRAM_ALLOWED_CHAT_IDS must be comma-separated numeric chat ids" });
+    return ids;
+  }),
+  /** Employee that owns Telegram traffic. Empty = DEFAULT_EMPLOYEE_ID. */
+  TELEGRAM_EMPLOYEE_ID: z.string().default(""),
   GH_TOKEN: z.string().default(""),
   AZURE_CLIENT_ID: z.string().default(""),
   AZURE_TENANT_ID: z.string().default(""),
