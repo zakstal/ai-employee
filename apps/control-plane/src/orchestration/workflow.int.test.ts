@@ -356,6 +356,47 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       await a.close();
     }, 45_000);
 
+    it("TELEGRAM_ROLE picks the role that handles Telegram messages; an unknown one is a logged no-op, not a Telegram retry loop", async () => {
+      const a = tgApp(tgCfg({ TELEGRAM_ROLE: "ops" }));
+      const res = await a.inject({ method: "POST", url: "/webhooks/telegram", headers: hdr, payload: update(30, "which role?", 7002) });
+      expect(res.statusCode).toBe(200);
+      const t = await waitFor("telegram:30", ["done"]);
+      expect(t.role_id).toBe("ops");
+      await a.close();
+
+      const bad = tgApp(tgCfg({ TELEGRAM_ROLE: "nope" }));
+      const r2 = await bad.inject({ method: "POST", url: "/webhooks/telegram", headers: hdr, payload: update(31, "hello", 7002) });
+      expect(r2.statusCode).toBe(200);
+      expect(r2.json()).toMatchObject({ error: "telegram role not configured" });
+      expect(await ledger.getTask("telegram:31")).toBeUndefined();
+      await bad.close();
+    }, 45_000);
+
+    it("POST /tasks with replyTo telegram runs the task and sends only the final result to the owner chat (no placeholder)", async () => {
+      const a = tgApp();
+      const before = telegram.messages.length;
+      const res = await a.inject({ method: "POST", url: "/tasks", payload: { employeeId: "dev", prompt: "summarise", taskKey: "reply1", replyTo: { channel: "telegram" } } });
+      expect(res.statusCode).toBe(202);
+      await waitFor("http:dev:reply1", ["done"]);
+      const sent = telegram.messages.slice(before);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({ chatId: "7001", text: "echo: summarise" });
+      await a.close();
+    }, 45_000);
+
+    it("a schedule delivering to telegram runs through the same path", async () => {
+      const a = tgApp();
+      const { taskId, input } = (await import("../schedules/tick.js")).taskFor({
+        id: "sch_tg", employee_id: "dev", name: "n", cron: "0 9 * * *", timezone: "UTC", role_id: "assistant", prompt: "daily digest",
+        deliver_to: { channel: "telegram", threadRef: "7002" }, next_fire_at: new Date("2026-10-17T09:00:00Z"),
+      } as never);
+      const before = telegram.messages.length;
+      await deps().orchestrator.startTask(taskId, input);
+      await waitFor(taskId, ["done"]);
+      expect(telegram.messages.slice(before)).toEqual([{ id: expect.any(String), chatId: "7002", text: "echo: daily digest" }]);
+      await a.close();
+    }, 45_000);
+
     it("ask/answer: a child asks, the question lands in the Telegram chat, and the owner's next message routes back to it", async () => {
       const rootId = "telegram:ask-root";
       await ledger.createTask(rootId, { employeeId: "dev", roleId: "assistant", prompt: "root prompt", source: { channel: "telegram", threadRef: "7001" } });
@@ -432,6 +473,16 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       expect(spec.env.GIT_AUTHOR_NAME).toBe("Dev Bot");
       const tools = (JSON.parse(spec.env.MCP_CONFIG!) as { mcpServers: { ai_employee: { env: Record<string, string> } } }).mcpServers.ai_employee;
       expect(tools.env.DEFAULT_TZ).toBe(deps().config.DEFAULT_TZ);
+    });
+
+    it("every role gets the tools server (employee_status, message_owner need no capability), with its tools allowed", async () => {
+      const { taskId } = await taskAndToken("ops"); // ops has no capabilities
+      const spec = await buildRunSpec(taskId, { employeeId: "dev", roleId: "ops", prompt: "x", source: { channel: "http" } });
+      const servers = (JSON.parse(spec.env.MCP_CONFIG!) as { mcpServers: Record<string, unknown> }).mcpServers;
+      expect(servers.ai_employee).toBeDefined();
+      expect(spec.env.ALLOWED_TOOLS).toContain("mcp__ai_employee__*");
+      expect(spec.env.SYSTEM_PROMPT).toContain("employee_status");
+      expect(spec.env.SYSTEM_PROMPT).not.toContain("start_task");
     });
 
     it("refresh route: 401 bad run token, 403 for a grant the role lacks, 200 with a fresh token for one it has", async () => {

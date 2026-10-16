@@ -10,6 +10,7 @@ import { Ledger } from "../db/ledger.js";
 import { buildServer } from "./server.js";
 import { NoopSlackClient } from "../slack/client.js";
 import { NoopClickUpClient } from "../clickup/client.js";
+import { NoopTelegramClient } from "../telegram/client.js";
 import { resetTestDatabases, TEST_DB_URL, TEST_DBOS_URL } from "../test-support.js";
 import { DbosOrchestrator } from "../orchestration/dbos-orchestrator.js";
 import { ClaudeService } from "../claude/service.js";
@@ -193,6 +194,63 @@ describe("claude accounts", () => {
       fake.personal = ok(0.1);
       await refresh();
       expect(clickup.chatMessages).toHaveLength(0);
+    });
+  });
+
+  describe("overage: meter vs billing now", () => {
+    const withOverage = (u5: number, u7: number, ovu: string, inUse?: string) => ({ ...ok(u5, u7), "overage-status": "allowed", "overage-utilization": ovu, ...(inUse ? { "overage-in-use": inUse } : {}) });
+
+    it("an account with 5h 0.29, 7d 0.81 and overage-utilization 0.52 (not in use) is picked, and the snapshot shows inUse false", async () => {
+      fake.work = withOverage(0.29, 0.81, "0.52", "false");
+      fake.personal = out("2099-01-01T00:00:00Z");
+      await refresh();
+      const snap = (await app.inject({ method: "GET", url: "/usage" })).json() as { accounts: { name: string; available: boolean; overage: { inUse: boolean | null; utilization: number } }[] };
+      expect(snap.accounts.find((a) => a.name === "work")).toMatchObject({ available: true, overage: { inUse: false, utilization: 0.52 } });
+      expect(await new ClaudeService({ config, ledger, now: () => NOW }).pickForLaunch()).toMatchObject({ kind: "account", account: { name: "work" } });
+    });
+
+    it("overage-in-use: true is stored, shown, and skips the account unless allowOverage", async () => {
+      fake.work = withOverage(0.29, 0.81, "0.52", "true");
+      fake.personal = out("2099-01-01T00:00:00Z");
+      await refresh();
+      expect((await ledger.listAccountUsage()).find((u) => u.name === "work")!.overage.inUse).toBe(true);
+      const svc = new ClaudeService({ config, ledger, now: () => NOW });
+      await putSettings({ limitPolicy: "failover" });
+      expect((await svc.pickForLaunch()).kind).toBe("blocked");
+      await putSettings({ allowOverage: true });
+      expect(await svc.pickForLaunch()).toMatchObject({ kind: "account", account: { name: "work" } });
+    });
+  });
+
+  describe("alert fan-out", () => {
+    it("with ALERT_TELEGRAM=1 the usage warning also reaches the owner's Telegram chat; without it only ClickUp", async () => {
+      const tg = new NoopTelegramClient();
+      const both = loadConfig({ ...process.env, DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, ALERT_CHANNEL_ID: "alerts", TELEGRAM_BOT_TOKEN: "fake-telegram-token", TELEGRAM_ALLOWED_CHAT_IDS: "7001", ALERT_TELEGRAM: "1", CLAUDE_CODE_OAUTH_TOKEN_WORK: TOKENS.work!, CLAUDE_CODE_OAUTH_TOKEN_PERSONAL: TOKENS.personal! } as NodeJS.ProcessEnv);
+      fake.work = ok(0.85);
+      fake.personal = ok(0.1);
+      await new ClaudeService({ config: both, ledger, clickup, telegram: tg, fetch: fakeFetch, now: () => NOW }).refresh();
+      expect(clickup.chatMessages.filter((m) => m.channelId === "alerts")).toHaveLength(1);
+      expect(tg.messages).toHaveLength(1);
+      expect(tg.messages[0]).toMatchObject({ chatId: "7001" });
+      expect(tg.messages[0]!.text).toContain('"work"');
+
+      await pool.query("DELETE FROM claude_account_usage");
+      clickup.chatMessages.length = 0;
+      const off = new NoopTelegramClient();
+      await new ClaudeService({ config, ledger, clickup, telegram: off, fetch: fakeFetch, now: () => NOW }).refresh(); // flag unset
+      expect(clickup.chatMessages).toHaveLength(1);
+      expect(off.messages).toHaveLength(0);
+    });
+
+    it("a Telegram-only deployment (no ClickUp channel) still alerts and marks the window alerted once", async () => {
+      const tg = new NoopTelegramClient();
+      const tgOnly = loadConfig({ ...process.env, DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, TELEGRAM_BOT_TOKEN: "fake-telegram-token", TELEGRAM_ALLOWED_CHAT_IDS: "7001", ALERT_TELEGRAM: "1", CLAUDE_CODE_OAUTH_TOKEN_WORK: TOKENS.work!, CLAUDE_CODE_OAUTH_TOKEN_PERSONAL: TOKENS.personal! } as NodeJS.ProcessEnv);
+      fake.work = ok(0.9);
+      fake.personal = ok(0.1);
+      const svc = new ClaudeService({ config: tgOnly, ledger, clickup, telegram: tg, fetch: fakeFetch, now: () => NOW });
+      await svc.refresh();
+      await svc.refresh();
+      expect(tg.messages).toHaveLength(1);
     });
   });
 

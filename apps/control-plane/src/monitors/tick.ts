@@ -1,5 +1,6 @@
 import { resolveRole, type Employee, type Monitor, type TaskInput } from "@ai-employee/core";
 import { deps } from "../orchestration/deps.js";
+import { alertSource } from "../alerts.js";
 import type { MonitorRow } from "../db/ledger.js";
 import { getCollector } from "../collectors/index.js";
 import { resolveGrantEnv } from "../credentials/index.js";
@@ -72,14 +73,13 @@ export function taskFor(d: DueMonitor, findings: Finding[], now: Date): { taskId
     "Carry the evidence block above VERBATIM into anything you create or hand on — the ClickUp task, the " +
     "brief you give a subagent, and the PR description — so every fix states the telemetry it came from and " +
     "a human can re-run the query. Never paraphrase a count or drop the link.";
-  const alertTo = config.ALERT_CHANNEL_ID;
   return {
     taskId: `monitor:${d.employee.id}:${d.name}:${stamp}`,
     input: {
       employeeId: d.employee.id,
       roleId: d.monitor.role,
       prompt,
-      source: alertTo ? { channel: "clickup-chat", threadRef: alertTo, quiet: true } : { channel: "http", quiet: true },
+      source: alertSource(config),
     },
   };
 }

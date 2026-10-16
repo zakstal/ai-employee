@@ -34,6 +34,13 @@ describe("parseUsageHeaders", () => {
     expect(u.overage).toEqual({ status: "rejected", utilization: 0, reset: new Date(1793000000 * 1000), disabledReason: "org_level_disabled" });
   });
 
+  it("parses overage-in-use as a boolean; absent or junk stays undefined", () => {
+    expect(parseUsageHeaders(hdrs({ "overage-in-use": "true" })).overage.inUse).toBe(true);
+    expect(parseUsageHeaders(hdrs({ "overage-in-use": "false" })).overage.inUse).toBe(false);
+    expect(parseUsageHeaders(hdrs({ "overage-in-use": "maybe" })).overage.inUse).toBeUndefined();
+    expect(parseUsageHeaders(hdrs({})).overage.inUse).toBeUndefined();
+  });
+
   it("leaves missing fields undefined", () => {
     const u = parseUsageHeaders(hdrs({ "5h-utilization": "0.1" }));
     expect(u.fiveHour).toEqual({ status: undefined, utilization: 0.1, reset: undefined });
@@ -92,7 +99,7 @@ describe("probeAccount", () => {
   });
 });
 
-function usage(name: string, o: { u5?: number; s5?: string; r5?: Date; u7?: number; s7?: string; r7?: Date; ov?: string; ovu?: number; claim?: string; unified?: string }): AccountUsage {
+function usage(name: string, o: { u5?: number; s5?: string; r5?: Date; u7?: number; s7?: string; r7?: Date; ov?: string; ovu?: number; claim?: string; unified?: string; inUse?: boolean }): AccountUsage {
   return {
     name,
     fingerprint: "f",
@@ -100,7 +107,7 @@ function usage(name: string, o: { u5?: number; s5?: string; r5?: Date; u7?: numb
     representativeClaim: o.claim ?? "five_hour",
     fiveHour: { status: o.s5 ?? "allowed", utilization: o.u5 ?? 0, reset: o.r5 ?? FUTURE },
     sevenDay: { status: o.s7 ?? "allowed", utilization: o.u7 ?? 0, reset: o.r7 ?? FUTURE2 },
-    overage: { status: o.ov ?? "rejected", utilization: o.ovu ?? 0 },
+    overage: { status: o.ov ?? "rejected", utilization: o.ovu ?? 0, inUse: o.inUse },
   };
 }
 const map = (...us: AccountUsage[]) => new Map(us.map((u) => [u.name, u]));
@@ -140,6 +147,36 @@ describe("availability", () => {
     const u = usage("a", { ov: "allowed", ovu: 0.1, claim: "overage" });
     expect(availability(u, false, NOW).ok).toBe(false);
     expect(availability(u, true, NOW).ok).toBe(true);
+  });
+});
+
+describe("availability: overage meter vs overage in use", () => {
+  it("an account that used overage earlier in the month (meter > 0) but is not billing it now stays available", () => {
+    // seen live: 5h 0.29, 7d 0.81, overage-utilization 0.52
+    const u = usage("a", { u5: 0.29, u7: 0.81, ov: "allowed", ovu: 0.52, claim: "five_hour", inUse: false });
+    expect(availability(u, false, NOW).ok).toBe(true);
+    expect(availability(usage("a", { u5: 0.29, u7: 0.81, ov: "allowed", ovu: 0.52 }), false, NOW).ok).toBe(true); // header absent
+  });
+  it("overage-in-use: true blocks unless allowOverage", () => {
+    const u = usage("a", { ov: "allowed", ovu: 0.52, inUse: true });
+    expect(availability(u, false, NOW).ok).toBe(false);
+    expect(availability(u, true, NOW).ok).toBe(true);
+  });
+  it("representative-claim overage blocks unless allowOverage; a rejected window blocks regardless of the meter", () => {
+    expect(availability(usage("a", { ov: "allowed", ovu: 0.1, claim: "overage" }), false, NOW).ok).toBe(false);
+    expect(availability(usage("a", { s7: "rejected", u7: 1 }), false, NOW).ok).toBe(false);
+  });
+  it("in overage with allowOverage still stops when the overage allowance itself is used up", () => {
+    expect(availability(usage("a", { ov: "allowed", ovu: 0.99, inUse: true }), true, NOW).ok).toBe(false);
+  });
+  it("a stale overage reading (its reset passed) no longer counts as in use", () => {
+    const u = usage("a", { ov: "allowed", ovu: 0.5, inUse: true });
+    u.overage.reset = new Date("2026-10-16T11:00:00Z");
+    expect(availability(u, false, NOW).ok).toBe(true);
+  });
+  it("chooseAccount picks the account with a non-zero overage meter instead of skipping it", () => {
+    const us = [usage("a", { u5: 0.29, u7: 0.81, ov: "allowed", ovu: 0.52 })];
+    expect(chooseAccount({ accounts: names("a"), usage: map(...us), settings: S, now: NOW }).account).toBe("a");
   });
 });
 

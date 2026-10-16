@@ -1,6 +1,8 @@
 import { resolveRole, roleGrants, type Employee, type Role, type ResultEvent, type RunExit, type RunHandle, type RunSpec, type StartedEvent, type TaskInput } from "@ai-employee/core";
 import type { Config } from "../config.js";
 import { deps, telegramClient } from "./deps.js";
+import { alert, alertConfigured } from "../alerts.js";
+import { ownerChatId } from "../telegram/owner.js";
 import { deliverTelegram, TELEGRAM_ACK_TEXT } from "../telegram/send.js";
 import { requestWake, shouldWake } from "../manager/tick.js";
 import { BOT_MARKER } from "../clickup/chat.js";
@@ -50,13 +52,12 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
   };
   // Built-in tools the agent may call back into the control plane with (per-run token, scoped to this task).
   const builtinServers: Record<string, unknown> = {};
-  if (role.capabilities.some((c) => c === "schedules" || c === "agents" || c === "monitors" || c === "backlog")) {
-    builtinServers.ai_employee = {
-      command: "ai-employee-tools",
-      env: { CONTROL_PLANE_URL: config.PUBLIC_BASE_URL, RUN_TOKEN: runToken, TASK_ID: taskId, DEFAULT_TZ: config.DEFAULT_TZ },
-    };
-    if (!role.allowedTools.includes("mcp__ai_employee__*")) env.ALLOWED_TOOLS = [...role.allowedTools, "mcp__ai_employee__*"].join(",");
-  }
+  // Every role gets it: employee_status, list_tasks and message_owner need no capability (the others are gated server-side).
+  builtinServers.ai_employee = {
+    command: "ai-employee-tools",
+    env: { CONTROL_PLANE_URL: config.PUBLIC_BASE_URL, RUN_TOKEN: runToken, TASK_ID: taskId, DEFAULT_TZ: config.DEFAULT_TZ },
+  };
+  if (!role.allowedTools.includes("mcp__ai_employee__*")) env.ALLOWED_TOOLS = [...role.allowedTools, "mcp__ai_employee__*"].join(",");
   // Credential values are NOT part of this step's output (DBOS records it): launchSandbox resolves them. Only their
   // names are needed here, so MCP servers whose ${VAR} placeholders a grant provides are kept.
   const credNames = grantEnvNames(employee, role, config);
@@ -91,7 +92,7 @@ export async function pickClaudeAccount(taskId: string, input: TaskInput): Promi
   const { config, ledger, employees, clickup } = deps();
   const employee = employees.get(input.employeeId);
   if (!employee || !usesClaudeAccounts(employee, resolveRole(employee, input.roleId), config)) return {};
-  const pick = await new ClaudeService({ config, ledger, clickup }).pickForLaunch();
+  const pick = await new ClaudeService({ config, ledger, clickup, telegram: telegramClient() }).pickForLaunch();
   if (pick.kind === "account") {
     await ledger.setTaskClaudeAccount(taskId, pick.account.name);
     return { account: pick.account.name };
@@ -144,7 +145,8 @@ export function environmentFooter(role: Role, employee?: Employee, managerRole?:
   if (bash.some((b) => b.startsWith("Bash(psql") || b.startsWith("Bash(pg-scratch"))) {
     lines.push('- Postgres: `eval "$(pg-scratch)"` starts a throwaway server in your workspace and exports DATABASE_URL. Use it for anything needing a real database; it dies with this run.');
   }
-  if (role.capabilities.includes("backlog")) lines.push("- Backlog: `list_tasks` shows every recent task for this employee, not just your own children.");
+  lines.push("- Visibility (every role): `employee_status` shows everything running now (any source), the last 24 h of finished tasks and Claude account usage; `list_tasks` lists recent tasks; `message_owner` sends the owner a message on their own channel (Telegram when configured).");
+  if (role.capabilities.includes("operate")) lines.push("- Operating: `start_task` (top-level task; reply_to \"telegram\" delivers the result to the owner), `cancel_task`, `task_events` (any task of this employee), `claude_settings` (get/set limitPolicy, allowOverage, warnAt, preferred). Changing settings changes spend: do it only when the owner asks.");
   if (role.capabilities.includes("monitors")) lines.push("- Monitors (background sweeps, default OFF): `list_monitors`, `enable_monitor`, `disable_monitor`. Turn one on/off when the user asks.");
   if (bash.length) lines.push(`- Shell commands allowed: ${bash.map((b) => b.slice(5, -1)).join(", ")}. Anything else via Bash is denied.`);
   lines.push("- If you are unsure whether something works, run it once and report the actual result. Never claim a tool is unavailable without trying.");
@@ -330,7 +332,7 @@ const ALERTABLE_CHANNELS = new Set(["cron", "child", "http"]);
 /** Best-effort one-line failure alert to the ops chat channel. Never throws. */
 async function alertOnFailure(taskId: string, input: TaskInput, exit: RunExit, result: ResultEvent | undefined, text: string): Promise<void> {
   const { config, clickup } = deps();
-  if (!config.ALERT_CHANNEL_ID) return;
+  if (!alertConfigured(config)) return;
   const failed = exit.code !== 0 || result?.isError === true;
   if (!failed || !ALERTABLE_CHANNELS.has(input.source.channel)) return;
   if (input.source.channel === "child" && input.source.parentTaskId) {
@@ -338,11 +340,7 @@ async function alertOnFailure(taskId: string, input: TaskInput, exit: RunExit, r
     const parent = await deps().ledger.getTask(input.source.parentTaskId);
     if (parent && (parent.status === "running" || parent.status === "queued" || parent.status === "awaiting_input")) return;
   }
-  try {
-    await clickup.postChannelMessage(config.CLICKUP_TEAM_ID, config.ALERT_CHANNEL_ID, `🤖 ⚠️ ${input.roleId} run failed (${taskId}): ${text.slice(0, 300)}`);
-  } catch (e) {
-    console.error("failed to post failure alert", e);
-  }
+  await alert({ config, clickup, telegram: telegramClient() }, `🤖 ⚠️ ${input.roleId} run failed (${taskId}): ${text.slice(0, 300)}`);
 }
 
 export async function postResult(taskId: string, input: TaskInput, exit: RunExit, result: ResultEvent | undefined, ack?: AckRef): Promise<void> {
@@ -378,6 +376,11 @@ export async function postResult(taskId: string, input: TaskInput, exit: RunExit
   }
   if (input.source.channel === "telegram" && input.source.threadRef) {
     await deliverTelegram(telegramClient(), input.source.threadRef, text, ack?.kind === "telegram" ? ack.id : undefined);
+  }
+  // Monitor / manager reports go to the ClickUp alert channel; ALERT_TELEGRAM mirrors them to the owner's chat.
+  if (input.source.quiet && input.source.channel === "clickup-chat" && input.source.threadRef === config.ALERT_CHANNEL_ID && config.ALERT_TELEGRAM) {
+    const chat = ownerChatId(config);
+    if (chat) await deliverTelegram(telegramClient(), chat, text).catch((e) => console.error("failed to mirror report to Telegram", e));
   }
   if (input.source.channel === "slack" && input.source.threadRef) {
     const [channel, threadTs] = input.source.threadRef.split(":");
@@ -429,7 +432,7 @@ export async function finalize(taskId: string, exit: RunExit, result: ResultEven
   }
   // Ended on a usage-limit message (policy off, recoveries used up, wait too long): mark that account out for the next picks.
   if (!ok && result && LIMIT_RE.test(result.text)) {
-    await new ClaudeService({ config: deps().config, ledger, clickup: deps().clickup }).recordLimitFromResult(taskId, result.text).catch((e) => console.error("record limit failed", e));
+    await new ClaudeService({ config: deps().config, ledger, clickup: deps().clickup, telegram: telegramClient() }).recordLimitFromResult(taskId, result.text).catch((e) => console.error("record limit failed", e));
   }
   await ledger.setStatus(taskId, ok ? "done" : exit.reason === "cancelled" ? "cancelled" : "failed", {
     result: {
@@ -444,5 +447,5 @@ export async function finalize(taskId: string, exit: RunExit, result: ResultEven
     },
   });
   // After the status is written, so this task counts in the streak.
-  if (input) await afterBacklogTask({ ledger, config: deps().config, clickup: deps().clickup }, deps().employees, input);
+  if (input) await afterBacklogTask({ ledger, config: deps().config, clickup: deps().clickup, telegram: telegramClient() }, deps().employees, input);
 }

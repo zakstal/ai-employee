@@ -134,7 +134,7 @@ task (`tasks.claude_account`) and shown on its `started` event.
 
 **Usage.** Every `CLAUDE_USAGE_CHECK_MIN` minutes (default 5) a scheduled job sends a 1-token `POST /v1/messages` per
 account and reads the `anthropic-ratelimit-unified-*` response headers: 5-hour and 7-day status, utilization (0..1) and
-reset time, plus overage status. (`GET /api/oauth/usage` rejects setup-token tokens, so it is not used.) The result is kept
+reset time, plus overage status and `overage-in-use` (whether the account is being billed to paid overage right now). (`GET /api/oauth/usage` rejects setup-token tokens, so it is not used.) The result is kept
 in `claude_account_usage`. A task that ends on `You've hit your session limit · resets 5:40pm (UTC)` also marks its account
 as out until that reset. When an account's 5h or 7d utilization reaches `warnAt`, one alert goes to `ALERT_CHANNEL_ID`
 per window.
@@ -154,7 +154,9 @@ These have no login, like `/runtime`: restrict them at the network layer. Agents
 (the `usage_status` MCP tool) and the runner uses `POST /agents/self/limit`; both take the run token.
 
 **Choosing an account.** At launch an account is skipped when its 5h or 7d status is not `allowed` (`allowed_warning`
-counts as allowed), its utilization is 0.98 or more, or, unless `allowOverage`, it is in overage. A window whose reset time
+counts as allowed), its utilization is 0.98 or more, or, unless `allowOverage`, it is being billed to overage right now
+(`overage-in-use: true` or `representative-claim: overage`). The overage meter alone (`overage-utilization`, which stays above 0 for
+the rest of the month after any spill) does not count. A window whose reset time
 has passed counts as clear. Of the rest, `preferred` order wins, else the most 5h headroom. An account never probed counts
 as available. If none qualifies: `wait` and `failover-then-wait` hold the task (queued) until the earliest reset, then try
 again; `failover` fails it with a clear message.
@@ -208,6 +210,8 @@ is edited as it works, then replaced by the answer), and follow-ups continue the
    - `TELEGRAM_WEBHOOK_SECRET`: any random string (letters, digits, `_`, `-`).
    - `TELEGRAM_ALLOWED_CHAT_IDS`: comma-separated numeric chat ids. Anyone else is ignored and never answered.
    - `TELEGRAM_EMPLOYEE_ID`: optional; defaults to `DEFAULT_EMPLOYEE_ID`.
+   - `TELEGRAM_ROLE`: optional; the role that handles Telegram messages. Defaults to the employee's `defaultRole`.
+   - `OWNER_TELEGRAM_CHAT_ID`: optional; the owner's chat for messages the employee sends on its own. Defaults to the first `TELEGRAM_ALLOWED_CHAT_IDS` entry.
 3. Find your chat id: message your bot once (it will not answer), then open
    `https://api.telegram.org/bot<token>/getUpdates` and read `message.chat.id` (or ask @userinfobot). Put it in
    `TELEGRAM_ALLOWED_CHAT_IDS` and restart.
@@ -220,6 +224,57 @@ node dist/cli/telegram.js delete-webhook
 ```
 
 `ask_human` questions from the agent arrive in the chat; your next message is the answer.
+
+### Operating the employee from chat
+
+The owner can see everything, control running work and change account settings by talking to the employee. Nothing here is a
+slash command: the chat role calls tools from the built-in `ai_employee` MCP server, so you ask in plain words ("what is
+running?", "stop the review task", "start an ops task to check the Azure errors and send me the result", "turn overage on").
+
+**See (every role, no capability).**
+
+| Tool | What it returns |
+|---|---|
+| `employee_status` | Every running, queued or waiting task of the employee from any source (http, ClickUp, ClickUp chat, Slack, Telegram, schedules, subagents): id, role, source channel, parent and root task, age, Claude account, cost so far, and the latest progress line (the last thing the agent said). Then the last 24 hours of finished tasks (status, one-line result), then every Claude account's 5h/7d utilization, reset time and availability, and the current settings. Backed by `GET /agents/self/status`. |
+| `list_tasks` | Recent tasks of the employee, any status. No longer needs the `backlog` capability. |
+| `message_owner` | See [Messaging the owner](#messaging-the-owner). |
+
+Cost so far is only known once a task has finished: Claude Code reports cost in its final result, so a running task shows `-`.
+
+**Control (roles with the `operate` capability).**
+
+| Tool | Does | Route |
+|---|---|---|
+| `start_task(role, prompt, task_key?, reply_to?)` | Starts a top-level task, as if `POST /tasks`. `reply_to: "telegram"` sends its final result to the owner's chat. `task_key` makes the call idempotent. | `POST /operator/tasks` |
+| `cancel_task(task_id)` | Cancels any task of the employee, not only the caller's children. Finished tasks are left alone; a task cannot cancel itself. | `POST /operator/tasks/:id/cancel` |
+| `task_events(task_id, since?, limit?)` | The event stream (text, tool calls, results) of any task of the employee. | `GET /operator/tasks/:id/events` |
+| `claude_settings(action, limitPolicy?, allowOverage?, warnAt?, preferred?)` | `get` reads, `set` changes only the fields given, with the same validation as `PUT /settings/claude`. Takes effect on the next decision. | `GET`/`PUT /operator/settings/claude` |
+
+These routes are authenticated with the run token like the other `/agents/self/*` routes, and a role without `operate` gets
+`403 role <id> lacks the "operate" capability`. Another employee's tasks look absent (404). `claude_settings` can enable
+paid overage, so give `operate` only to the role you chat with. `dev.yaml` gives it to `developer`, the default role.
+
+**Replies for HTTP and scheduled work.** `POST /tasks` accepts `"replyTo": {"channel": "telegram"}` (optional `"chat"`, which must be an
+allowed chat; it defaults to the owner's). The task runs quietly, with no placeholder, and its final result is sent to that chat.
+A schedule's `deliverTo` accepts `{channel: telegram}` the same way (in `dev.yaml` style config, `threadRef` may be left out for the
+owner's chat), and a schedule created from a Telegram conversation delivers back to that chat. Without `replyTo` nothing changes.
+
+```sh
+curl -s localhost:3000/tasks -H 'content-type: application/json' \
+  -d '{"employeeId":"dev","roleId":"ops","prompt":"Check Azure errors for the last hour.","replyTo":{"channel":"telegram"}}'
+```
+
+### Messaging the owner
+
+Any role can call `message_owner(text)` (`POST /agents/self/message-owner`) to tell the owner something without being asked: a result, a
+blocker, a decision needed. It goes to the owner's Telegram chat (`OWNER_TELEGRAM_CHAT_ID`, else the first `TELEGRAM_ALLOWED_CHAT_IDS`
+entry). If Telegram is not configured it falls back to the ClickUp `ALERT_CHANNEL_ID`; with neither it returns an error to the agent.
+Text over 4096 characters is split into several messages. Each task may send at most 20 per hour (HTTP 429 after that); the counter is
+in memory and resets on restart.
+
+Alerts use the same owner chat. Failure alerts, Claude usage warnings, backlog guard alerts, the daily digest and monitor/manager
+reports go to ClickUp as before; set `ALERT_TELEGRAM=1` to send them to the owner's Telegram chat as well (with the flag and no
+`ALERT_CHANNEL_ID`, Telegram alone gets them).
 
 ## Deploy
 

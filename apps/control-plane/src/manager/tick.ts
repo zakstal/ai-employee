@@ -1,5 +1,6 @@
 import type { TaskInput } from "@ai-employee/core";
 import { deps } from "../orchestration/deps.js";
+import { alertSource } from "../alerts.js";
 
 /**
  * The manager: woken when backlog work finishes, not on a timer.
@@ -33,7 +34,6 @@ export async function claim(employeeId: string, now: Date): Promise<{ taskId: st
   if (reason === null) return undefined;
   const heartbeat = reason === "HEARTBEAT";
   const stamp = now.toISOString().slice(0, 16); // minute resolution == dedup key
-  const alertTo = config.ALERT_CHANNEL_ID;
   return {
     taskId: `manager:${employeeId}:${stamp}`,
     input: {
@@ -48,7 +48,7 @@ export async function claim(employeeId: string, now: Date): Promise<{ taskId: st
           `What completed since your last run: ${reason}\n\n` +
           "Follow your standing procedure: establish what is actually done from the branches and the task " +
           "records, update the backlog, dispatch whatever is now unblocked, and report only what a human needs.",
-      source: alertTo ? { channel: "clickup-chat", threadRef: alertTo, quiet: true } : { channel: "http", quiet: true },
+      source: alertSource(config),
     },
   };
 }

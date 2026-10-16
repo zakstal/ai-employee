@@ -2,6 +2,8 @@ import type { Backlog, Employee, TaskInput } from "@ai-employee/core";
 import type { Config } from "../config.js";
 import type { Ledger } from "../db/ledger.js";
 import type { ClickUpClient } from "../clickup/client.js";
+import type { TelegramClient } from "../telegram/client.js";
+import { alert as sendAlert } from "../alerts.js";
 
 /**
  * Flow guards, all enforced server-side so a model cannot talk its way past them:
@@ -12,7 +14,10 @@ export interface GuardDeps {
   ledger: Ledger;
   config: Config;
   clickup: ClickUpClient;
+  telegram?: TelegramClient | undefined;
 }
+
+const alert = (d: GuardDeps, text: string): Promise<boolean> => sendAlert(d, text);
 
 /** Start of the current day in `tz`, and its date string. ponytail: off by up to an hour on a DST-change day. */
 export function dayStart(tz: string, now: Date): { start: Date; day: string } {
@@ -23,14 +28,6 @@ export function dayStart(tz: string, now: Date): { start: Date; day: string } {
   return { start: new Date(now.getTime() - (local.getTime() - startLocal.getTime())), day };
 }
 
-async function alert(d: GuardDeps, text: string): Promise<void> {
-  if (!d.config.ALERT_CHANNEL_ID) return;
-  try {
-    await d.clickup.postChannelMessage(d.config.CLICKUP_TEAM_ID, d.config.ALERT_CHANNEL_ID, text);
-  } catch (e) {
-    console.error("failed to post backlog alert", e);
-  }
-}
 
 /** A `guard: ...` message when a dispatch must be refused, else undefined. ponytail: check-then-start is not atomic; one manager run dispatches sequentially. */
 export async function checkDispatchGuards(d: GuardDeps, employee: Employee, backlogId: string, item?: string, now = new Date()): Promise<string | undefined> {

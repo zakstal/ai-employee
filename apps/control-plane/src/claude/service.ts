@@ -2,6 +2,8 @@ import { parseLimitMessage, type LimitHit } from "@ai-employee/core";
 import type { Config } from "../config.js";
 import type { Ledger } from "../db/ledger.js";
 import type { ClickUpClient } from "../clickup/client.js";
+import type { TelegramClient } from "../telegram/client.js";
+import { alert, alertConfigured } from "../alerts.js";
 import type { ClaudeAccount } from "./accounts.js";
 import { ClaudeSettingsPatchSchema, ClaudeSettingsSchema, DEFAULT_CLAUDE_SETTINGS, type ClaudeSettings } from "./settings.js";
 import { availability, chooseAccount, probeAccount, type AccountUsage, type WindowUsage } from "./usage.js";
@@ -25,6 +27,7 @@ export interface ClaudeServiceDeps {
   config: Config;
   ledger: Ledger;
   clickup?: ClickUpClient | undefined;
+  telegram?: TelegramClient | undefined;
   fetch?: typeof fetch | undefined;
   now?: (() => Date) | undefined;
 }
@@ -76,7 +79,7 @@ export class ClaudeService {
           representativeClaim: u?.representativeClaim ?? null,
           fiveHour: win(u?.fiveHour ?? {}),
           sevenDay: win(u?.sevenDay ?? {}),
-          overage: { ...win(u?.overage ?? {}), disabledReason: u?.overage.disabledReason ?? null },
+          overage: { ...win(u?.overage ?? {}), disabledReason: u?.overage.disabledReason ?? null, inUse: u?.overage.inUse ?? null },
           checkedAt: u?.checkedAt?.toISOString() ?? null,
           lastError: u?.lastError ?? null,
         };
@@ -92,20 +95,16 @@ export class ClaudeService {
   }
 
   private async alertOverThreshold(probed: AccountUsage[]): Promise<void> {
-    const { config, clickup, ledger } = this.d;
-    if (!config.ALERT_CHANNEL_ID || !clickup) return;
+    const { config, clickup, telegram, ledger } = this.d;
+    if (!alertConfigured(config) || !clickup) return;
     const { warnAt } = await this.settings();
     const sent = await ledger.alertedWindows();
     for (const u of probed) {
       for (const [label, w, prior] of [["5h", u.fiveHour, sent.get(u.name)?.fiveHour], ["7d", u.sevenDay, sent.get(u.name)?.sevenDay]] as const) {
         if (w.utilization === undefined || w.utilization < warnAt || !w.reset) continue;
         if (prior && Math.abs(prior.getTime() - w.reset.getTime()) < 60_000) continue; // already alerted for this window
-        try {
-          await clickup.postChannelMessage(config.CLICKUP_TEAM_ID, config.ALERT_CHANNEL_ID, `🤖 ⚠️ Claude account "${u.name}" is at ${Math.round(w.utilization * 100)}% of its ${label} limit (resets ${w.reset.toISOString()})`);
-          await ledger.markWindowAlerted(u.name, label, w.reset);
-        } catch (e) {
-          console.error("failed to post Claude usage alert", e); // retried at the next probe
-        }
+        const sent = await alert({ config, clickup, telegram }, `🤖 ⚠️ Claude account "${u.name}" is at ${Math.round(w.utilization * 100)}% of its ${label} limit (resets ${w.reset.toISOString()})`);
+        if (sent) await ledger.markWindowAlerted(u.name, label, w.reset); // otherwise retried at the next probe
       }
     }
   }

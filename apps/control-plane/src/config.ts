@@ -50,6 +50,12 @@ const Env = z.object({
   }),
   /** Employee that owns Telegram traffic. Empty = DEFAULT_EMPLOYEE_ID. */
   TELEGRAM_EMPLOYEE_ID: z.string().default(""),
+  /** Role that handles Telegram messages. Empty = the employee's defaultRole. */
+  TELEGRAM_ROLE: z.string().default(""),
+  /** The owner's Telegram chat: where message_owner, alerts and replyTo default to. Empty = the first TELEGRAM_ALLOWED_CHAT_IDS entry. */
+  OWNER_TELEGRAM_CHAT_ID: z.string().default("").refine((v) => v === "" || /^-?\d+$/.test(v), "OWNER_TELEGRAM_CHAT_ID must be a numeric chat id"),
+  /** 1/true = alerts (failures, usage warnings, backlog guards, daily digest) also go to the owner's Telegram chat, in addition to ClickUp. */
+  ALERT_TELEGRAM: z.string().default("").transform((v) => ["1", "true"].includes(v.trim().toLowerCase())),
   GH_TOKEN: z.string().default(""),
   AZURE_CLIENT_ID: z.string().default(""),
   AZURE_TENANT_ID: z.string().default(""),

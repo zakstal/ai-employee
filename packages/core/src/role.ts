@@ -76,7 +76,10 @@ export const ScheduleSchema = z
     prompt: z.string().min(1).optional(),
     /** Path (relative to the config dirs) of a markdown file whose contents become `prompt`. Exactly one of prompt / promptFile. */
     promptFile: z.string().min(1).optional(),
-    deliverTo: z.object({ channel: z.enum(["clickup", "clickup-chat"]), threadRef: z.string().min(1) }),
+    /** telegram: threadRef is a chat id; omitted = the owner's chat (OWNER_TELEGRAM_CHAT_ID / first TELEGRAM_ALLOWED_CHAT_IDS). */
+    deliverTo: z
+      .object({ channel: z.enum(["clickup", "clickup-chat", "telegram"]), threadRef: z.string().min(1).optional() })
+      .refine((d) => d.channel === "telegram" || !!d.threadRef, { message: "threadRef is required unless channel is telegram" }),
     enabled: z.boolean().default(true),
   })
   .refine((s) => Number(!!s.prompt) + Number(!!s.promptFile) === 1, { message: "exactly one of prompt or promptFile is required" });

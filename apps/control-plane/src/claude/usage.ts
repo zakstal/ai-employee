@@ -15,7 +15,8 @@ export interface AccountUsage {
   representativeClaim?: string | undefined;
   fiveHour: WindowUsage;
   sevenDay: WindowUsage;
-  overage: WindowUsage & { disabledReason?: string | undefined };
+  /** `inUse`: this account is being billed to paid overage right now (header `overage-in-use`). Not the same as `overage.utilization > 0`, which is the month's running meter. */
+  overage: WindowUsage & { disabledReason?: string | undefined; inUse?: boolean | undefined };
   checkedAt?: Date | undefined;
   lastError?: string | undefined;
 }
@@ -33,6 +34,10 @@ export function parseUsageHeaders(h: Headers): Parsed {
     const n = v === undefined ? NaN : Number(v);
     return Number.isFinite(n) ? n : undefined;
   };
+  const bool = (k: string): boolean | undefined => {
+    const v = str(k)?.toLowerCase();
+    return v === "true" ? true : v === "false" ? false : undefined;
+  };
   const date = (k: string): Date | undefined => {
     const n = num(k);
     return n === undefined ? undefined : new Date(n * 1000);
@@ -43,7 +48,7 @@ export function parseUsageHeaders(h: Headers): Parsed {
     representativeClaim: str("representative-claim"),
     fiveHour: win("5h"),
     sevenDay: win("7d"),
-    overage: { ...win("overage"), disabledReason: str("overage-disabled-reason") },
+    overage: { ...win("overage"), disabledReason: str("overage-disabled-reason"), inUse: bool("overage-in-use") },
   };
 }
 
@@ -89,7 +94,7 @@ export const FULL = 0.98;
 const OK_STATUS = new Set(["allowed", "allowed_warning"]);
 
 /** A window whose reset time has passed is clear, whatever the last probe saw (it may be minutes stale). */
-const live = (w: WindowUsage, now: Date): WindowUsage => (w.reset && w.reset <= now ? {} : w);
+const live = <T extends WindowUsage>(w: T, now: Date): T => (w.reset && w.reset <= now ? ({} as T) : w);
 const exhausted = (w: WindowUsage): boolean => (w.status !== undefined && !OK_STATUS.has(w.status)) || (w.utilization ?? 0) >= FULL;
 
 export interface Availability {
@@ -109,7 +114,9 @@ export function availability(u: AccountUsage | undefined, allowOverage: boolean,
     if (allowOverage && overageOpen) return { ok: true };
     return { ok: false, until: latest(blocked) };
   }
-  const inOverage = u.representativeClaim === "overage" || (overage.utilization ?? 0) > 0;
+  // Billed to overage NOW: the header says so, or the request would be claimed against overage. overage.utilization alone is the
+  // month's running meter (it stays above 0 after any past spill), so it must not mark the account as in overage.
+  const inOverage = overage.inUse === true || u.representativeClaim === "overage";
   if (inOverage && !allowOverage) return { ok: false, until: latest(windows) };
   if (inOverage && exhausted(overage)) return { ok: false, until: overage.reset };
   return { ok: true };

@@ -29,7 +29,7 @@ export async function reconcileSchedules(o: ReconcileOptions): Promise<void> {
       const prompt = s.prompt!;
       const hash = createHash("sha256").update(JSON.stringify({ cron: s.cron, timezone, role: s.role, prompt, deliverTo: s.deliverTo, enabled: s.enabled })).digest("hex");
       const wrote = await o.ledger.upsertConfigSchedule({
-        employeeId: e.id, name, cron: s.cron, timezone, roleId: s.role, prompt, deliverTo: s.deliverTo, enabled: s.enabled,
+        employeeId: e.id, name, cron: s.cron, timezone, roleId: s.role, prompt, deliverTo: { channel: s.deliverTo.channel, threadRef: s.deliverTo.threadRef ?? "" }, enabled: s.enabled,
         nextFireAt: nextFire(s.cron, timezone, now), hash,
       });
       if (wrote) log(`schedule ${e.id}/${name} reconciled from config`);

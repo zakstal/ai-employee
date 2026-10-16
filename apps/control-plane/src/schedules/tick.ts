@@ -2,6 +2,7 @@ import type { TaskInput } from "@ai-employee/core";
 import { deps } from "../orchestration/deps.js";
 import type { ScheduleRow } from "../db/ledger.js";
 import { nextFire } from "./cron.js";
+import { ownerChatId } from "../telegram/owner.js";
 
 /** Engine-free helpers shared by the DBOS tick workflow and by tests. */
 
@@ -10,6 +11,14 @@ export async function listDue(now: Date): Promise<ScheduleRow[]> {
 }
 
 export function taskFor(schedule: ScheduleRow): { taskId: string; input: TaskInput } {
+  if (schedule.deliver_to.channel === "telegram") {
+    // threadRef empty = the owner's chat. No chat (Telegram off): run with nowhere to deliver, so a failure still alerts.
+    const chat = schedule.deliver_to.threadRef || ownerChatId(deps().config);
+    return {
+      taskId: `cron:${schedule.id}:${schedule.next_fire_at.toISOString()}`,
+      input: { employeeId: schedule.employee_id, roleId: schedule.role_id, prompt: schedule.prompt, source: chat ? { channel: "telegram", threadRef: chat, quiet: true } : { channel: "cron", quiet: true } },
+    };
+  }
   return {
     taskId: `cron:${schedule.id}:${schedule.next_fire_at.toISOString()}`,
     input: {
@@ -17,7 +26,7 @@ export function taskFor(schedule: ScheduleRow): { taskId: string; input: TaskInp
       roleId: schedule.role_id,
       prompt: schedule.prompt,
       // quiet: machine-triggered — no placeholder/spinner, just the finished content in the channel.
-      source: { channel: schedule.deliver_to.channel as "clickup" | "clickup-chat", threadRef: schedule.deliver_to.threadRef, quiet: true },
+      source: { channel: schedule.deliver_to.channel as "clickup" | "clickup-chat" | "telegram", threadRef: schedule.deliver_to.threadRef, quiet: true },
     },
   };
 }

@@ -137,7 +137,7 @@ roles:
     memoryMb: 4096
     timeoutSec: 9000
     credentials: [claude-subscription, clickup, github, azure-user]
-    capabilities: [schedules, agents, monitors]
+    capabilities: [schedules, agents, monitors, operate]
     canSchedule: [assistant, ops]
     canSpawn: [triage, spec, implement, review, ops, compound]
   - id: triage
