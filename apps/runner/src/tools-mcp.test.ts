@@ -102,6 +102,7 @@ describe("ai_employee MCP tools", () => {
         "send_message",
         "spawn_agent",
         "start_workstream",
+        "usage_status",
         "wait_for",
       ]);
     } finally {
@@ -469,6 +470,49 @@ describe("ai_employee MCP tools", () => {
       const result = await client.callTool({ name: "read_messages", arguments: { channel: "repo.x" } });
       expect(cp.requests[0]?.url).toBe("/agents/self/messages?channel=repo.x&since=0&wait=0");
       expect(firstText(result)).toBe("No new messages on repo.x.");
+    } finally {
+      await close();
+      await cp.close();
+    }
+  }, 20_000);
+
+  it("usage_status GETs /agents/self/usage and renders one row per account", async () => {
+    const cp = await fakeControlPlane((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          currentAccount: "work",
+          settings: { limitPolicy: "failover-then-wait", allowOverage: false, warnAt: 0.8, preferred: [] },
+          accounts: [
+            { name: "work", available: true, fiveHour: { status: "allowed", utilization: 0.85, resetsAt: "2026-10-16T17:40:00.000Z" }, sevenDay: { status: "allowed", utilization: 0.4, resetsAt: null }, overage: { status: "rejected", utilization: 0 }, checkedAt: "2026-10-16T12:00:00.000Z", lastError: null },
+            { name: "personal", available: false, availableAgainAt: "2026-10-16T18:00:00.000Z", fiveHour: { status: "rejected", utilization: 1, resetsAt: "2026-10-16T18:00:00.000Z" }, sevenDay: { status: null, utilization: null, resetsAt: null }, overage: { status: null, utilization: null }, checkedAt: null, lastError: "network down" },
+          ],
+        }),
+      );
+    });
+    const { client, close } = await connectClient(cp.port);
+    try {
+      const text = firstText(await client.callTool({ name: "usage_status", arguments: {} }));
+      expect(cp.requests[0]?.method).toBe("GET");
+      expect(cp.requests[0]?.url).toBe("/agents/self/usage");
+      expect(text).toContain("limit policy: failover-then-wait; overage not allowed");
+      expect(text).toContain("work (this task) | available | 5h 85% resets 2026-10-16T17:40:00.000Z | 7d 40% resets ?");
+      expect(text).toContain("personal | at limit until 2026-10-16T18:00:00.000Z | 5h 100%");
+      expect(text).toContain("(last error: network down)");
+    } finally {
+      await close();
+      await cp.close();
+    }
+  }, 20_000);
+
+  it("usage_status says so when no accounts are configured", async () => {
+    const cp = await fakeControlPlane((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ currentAccount: null, settings: { limitPolicy: "off", allowOverage: false, warnAt: 0.8, preferred: [] }, accounts: [] }));
+    });
+    const { client, close } = await connectClient(cp.port);
+    try {
+      expect(firstText(await client.callTool({ name: "usage_status", arguments: {} }))).toBe("No Claude subscription accounts are configured.");
     } finally {
       await close();
       await cp.close();

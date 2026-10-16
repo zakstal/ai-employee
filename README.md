@@ -120,6 +120,65 @@ Use it to claim shared files, announce pushed fixes, or ask another agent a ques
 `agent_messages` in the A2A `Message` shape (`role`, `messageId`, `contextId` = channel, `parts`), so an A2A endpoint
 can be added later. Routes: `POST` and `GET /agents/self/messages`, authenticated like the other `/agents/self/*` routes.
 
+## Claude accounts, usage and limits
+
+One employee can hold several Claude subscriptions (tokens from `claude setup-token`) and spread work across them. The
+control plane tracks each account's usage, gives every task an account with headroom, and deals with a task hitting a
+usage limit mid-run instead of letting it die.
+
+**Accounts.** Every env var `CLAUDE_CODE_OAUTH_TOKEN_<NAME>` is an account called `<name>` (lowercased). A lone legacy
+`CLAUDE_CODE_OAUTH_TOKEN` is the account `default`. Tokens are never logged or returned; accounts are identified by name
+and a 12-character sha256 fingerprint. Roles that list the built-in `claude-subscription` grant get one account per task,
+injected as `CLAUDE_CODE_OAUTH_TOKEN` (the runner and `claude` read the same variable). The account name is stored on the
+task (`tasks.claude_account`) and shown on its `started` event.
+
+**Usage.** Every `CLAUDE_USAGE_CHECK_MIN` minutes (default 5) a scheduled job sends a 1-token `POST /v1/messages` per
+account and reads the `anthropic-ratelimit-unified-*` response headers: 5-hour and 7-day status, utilization (0..1) and
+reset time, plus overage status. (`GET /api/oauth/usage` rejects setup-token tokens, so it is not used.) The result is kept
+in `claude_account_usage`. A task that ends on `You've hit your session limit · resets 5:40pm (UTC)` also marks its account
+as out until that reset. When an account's 5h or 7d utilization reaches `warnAt`, one alert goes to `ALERT_CHANNEL_ID`
+per window.
+
+**Settings.** Stored in Postgres and read on every decision, so changes apply immediately, with no deploy or restart:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `limitPolicy` | `failover-then-wait` | `failover`: switch to another account. `wait`: sleep until the account's window resets. `failover-then-wait`: switch if any account has headroom, else wait for the earliest reset. `off`: do nothing special; a limit ends the task as it always did, and launch never refuses. |
+| `allowOverage` | `false` | Let tasks use accounts that have spilled into paid overage. |
+| `warnAt` | `0.8` | Alert threshold (0..1) on the 5h and 7d windows. |
+| `preferred` | `[]` | Account names in order of preference; empty = most 5h headroom first. |
+
+**Routes.** `GET /usage` (per-account snapshot and current settings), `POST /usage/refresh` (probe now),
+`GET /settings/claude`, `PUT /settings/claude` (any subset of the settings; unknown keys and bad values are a 400).
+These have no login, like `/runtime`: restrict them at the network layer. Agents get `GET /agents/self/usage`
+(the `usage_status` MCP tool) and the runner uses `POST /agents/self/limit`; both take the run token.
+
+**Choosing an account.** At launch an account is skipped when its 5h or 7d status is not `allowed` (`allowed_warning`
+counts as allowed), its utilization is 0.98 or more, or, unless `allowOverage`, it is in overage. A window whose reset time
+has passed counts as clear. Of the rest, `preferred` order wins, else the most 5h headroom. An account never probed counts
+as available. If none qualifies: `wait` and `failover-then-wait` hold the task (queued) until the earliest reset, then try
+again; `failover` fails it with a clear message.
+
+**A limit hit mid-run.** The runner spots the limit message, holds it back (so it is not taken as the task's answer),
+reports a `limit_hit` event and asks the control plane what to do. On `failover` it switches to the returned token; on
+`wait` it sleeps until the reset time plus 60 seconds, sending a `heartbeat` event every 2 minutes. Then it resumes the
+same Claude session (`--resume <session id>`) with: "You hit a usage limit; the employee switched account (or waited).
+Continue where you left off; any build that failed during the outage must be rerun." At most 3 recoveries per task. If a
+wait would outlast the task's own time limit (`TASK_TIMEOUT_SEC`, the role's `timeoutSec`), the runner ends the task with the
+limit message instead. This works the same for the warm runner and Cloud Run jobs, since the container stays alive.
+
+**`token-refresh.d`.** After a switch, the runner runs every executable in `/etc/ai-employee/token-refresh.d/` (override:
+`TOKEN_REFRESH_D_DIR`), in name order, 60 s each, with the new token in `CLAUDE_CODE_OAUTH_TOKEN` (and `CLAUDE_ACCOUNT`).
+Derived images use it to refresh files other processes read. For example, an image whose Fabro agent sources
+`~/.fabro/claude.env`:
+
+```sh
+#!/bin/sh
+printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN" > "$HOME/.fabro/claude.env"
+```
+
+A failing hook is logged and does not stop the others. Hooks never run for the first token, only on a switch.
+
 ## Run it locally
 
 You need Node 22+, pnpm, Docker and the `claude` CLI, plus an Anthropic API key or a `claude setup-token` token.
@@ -148,7 +207,7 @@ Open `http://localhost:3000/status` to watch it.
 
 ## Security
 
-Some HTTP routes have **no login**: `POST /tasks`, `GET /tasks/:id`, `/employees/*`, `/runtime`, `/status`, `/stats`.
+Some HTTP routes have **no login**: `POST /tasks`, `GET /tasks/:id`, `/employees/*`, `/runtime`, `/status`, `/stats`, `/usage`, `/settings/claude`.
 Anyone who can reach them can start tasks with your logins. Before exposing the host, restrict those routes (an IP
 allowlist at the proxy, a VPN, or IAP). Webhooks and agent routes have their own secrets.
 

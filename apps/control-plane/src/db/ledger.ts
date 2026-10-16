@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type pg from "pg";
 import type { RunHandle, RunnerEvent, TaskInput, TaskStatus } from "@ai-employee/core";
+import type { AccountUsage } from "../claude/usage.js";
 
 export interface DeliverTo {
   channel: string;
@@ -112,6 +113,8 @@ export interface TaskRow {
   depth: number;
   question: string | null;
   answer: string | null;
+  /** Claude subscription account the run authenticates with (name only). */
+  claude_account: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -301,6 +304,96 @@ export class Ledger {
       [employeeId, channel, since, taskId, limit],
     );
     return r.rows.map((x) => ({ ...x, id: Number(x.id) }));
+  }
+
+  // ---- Claude accounts: settings, usage, per-task account
+  async getSetting<T>(key: string): Promise<T | undefined> {
+    const r = await this.db.query<{ value: T }>("SELECT value FROM engine_settings WHERE key = $1", [key]);
+    return r.rows[0]?.value;
+  }
+
+  async setSetting(key: string, value: unknown): Promise<void> {
+    await this.db.query(
+      "INSERT INTO engine_settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+      [key, JSON.stringify(value)],
+    );
+  }
+
+  async setTaskClaudeAccount(taskId: string, account: string): Promise<void> {
+    await this.db.query("UPDATE tasks SET claude_account = $2 WHERE id = $1", [taskId, account]);
+  }
+
+  /** A probe that read headers replaces the account's usage; one that failed only records last_error and keeps the last good numbers. */
+  async saveAccountUsage(u: AccountUsage): Promise<void> {
+    if (u.lastError !== undefined && u.fiveHour.status === undefined && u.fiveHour.utilization === undefined && u.sevenDay.utilization === undefined) {
+      await this.db.query(
+        `INSERT INTO claude_account_usage (name, fingerprint, checked_at, last_error) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (name) DO UPDATE SET fingerprint = EXCLUDED.fingerprint, checked_at = EXCLUDED.checked_at, last_error = EXCLUDED.last_error`,
+        [u.name, u.fingerprint, u.checkedAt ?? new Date(), u.lastError],
+      );
+      return;
+    }
+    await this.db.query(
+      `INSERT INTO claude_account_usage (name, fingerprint, unified_status, representative_claim,
+         five_hour_status, five_hour_utilization, five_hour_reset, seven_day_status, seven_day_utilization, seven_day_reset,
+         overage_status, overage_utilization, overage_reset, overage_disabled_reason, checked_at, last_error)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       ON CONFLICT (name) DO UPDATE SET fingerprint = EXCLUDED.fingerprint, unified_status = EXCLUDED.unified_status,
+         representative_claim = EXCLUDED.representative_claim, five_hour_status = EXCLUDED.five_hour_status,
+         five_hour_utilization = EXCLUDED.five_hour_utilization, five_hour_reset = EXCLUDED.five_hour_reset,
+         seven_day_status = EXCLUDED.seven_day_status, seven_day_utilization = EXCLUDED.seven_day_utilization,
+         seven_day_reset = EXCLUDED.seven_day_reset, overage_status = EXCLUDED.overage_status,
+         overage_utilization = EXCLUDED.overage_utilization, overage_reset = EXCLUDED.overage_reset,
+         overage_disabled_reason = EXCLUDED.overage_disabled_reason, checked_at = EXCLUDED.checked_at, last_error = EXCLUDED.last_error`,
+      [
+        u.name, u.fingerprint, u.unifiedStatus ?? null, u.representativeClaim ?? null,
+        u.fiveHour.status ?? null, u.fiveHour.utilization ?? null, u.fiveHour.reset ?? null,
+        u.sevenDay.status ?? null, u.sevenDay.utilization ?? null, u.sevenDay.reset ?? null,
+        u.overage.status ?? null, u.overage.utilization ?? null, u.overage.reset ?? null, u.overage.disabledReason ?? null,
+        u.checkedAt ?? new Date(), u.lastError ?? null,
+      ],
+    );
+  }
+
+  /** A task ended on the limit message: mark that window rejected until its reset, leaving the rest of the row alone. */
+  async markAccountLimited(name: string, fingerprint: string, window: "5h" | "7d", reset: Date | undefined, at: Date): Promise<void> {
+    const col = window === "5h" ? "five_hour" : "seven_day";
+    await this.db.query(
+      `INSERT INTO claude_account_usage (name, fingerprint, ${col}_status, ${col}_utilization, ${col}_reset, checked_at)
+       VALUES ($1,$2,'rejected',1,$3,$4)
+       ON CONFLICT (name) DO UPDATE SET ${col}_status = 'rejected', ${col}_utilization = 1,
+         ${col}_reset = COALESCE($3, claude_account_usage.${col}_reset), checked_at = $4`,
+      [name, fingerprint, reset ?? null, at],
+    );
+  }
+
+  async listAccountUsage(): Promise<AccountUsage[]> {
+    const r = await this.db.query<Record<string, unknown>>("SELECT * FROM claude_account_usage ORDER BY name");
+    const d = (v: unknown): Date | undefined => (v instanceof Date ? v : undefined);
+    const n = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+    const t = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+    return r.rows.map((x) => ({
+      name: x.name as string,
+      fingerprint: x.fingerprint as string,
+      unifiedStatus: t(x.unified_status),
+      representativeClaim: t(x.representative_claim),
+      fiveHour: { status: t(x.five_hour_status), utilization: n(x.five_hour_utilization), reset: d(x.five_hour_reset) },
+      sevenDay: { status: t(x.seven_day_status), utilization: n(x.seven_day_utilization), reset: d(x.seven_day_reset) },
+      overage: { status: t(x.overage_status), utilization: n(x.overage_utilization), reset: d(x.overage_reset), disabledReason: t(x.overage_disabled_reason) },
+      checkedAt: d(x.checked_at),
+      lastError: t(x.last_error),
+    }));
+  }
+
+  /** Window alerts already sent: account -> reset time of the 5h / 7d window alerted for. */
+  async alertedWindows(): Promise<Map<string, { fiveHour?: Date; sevenDay?: Date }>> {
+    const r = await this.db.query<{ name: string; a5: Date | null; a7: Date | null }>("SELECT name, alerted_five_hour_reset AS a5, alerted_seven_day_reset AS a7 FROM claude_account_usage");
+    return new Map(r.rows.map((x) => [x.name, { ...(x.a5 ? { fiveHour: x.a5 } : {}), ...(x.a7 ? { sevenDay: x.a7 } : {}) }]));
+  }
+
+  async markWindowAlerted(name: string, window: "5h" | "7d", reset: Date): Promise<void> {
+    const col = window === "5h" ? "alerted_five_hour_reset" : "alerted_seven_day_reset";
+    await this.db.query(`UPDATE claude_account_usage SET ${col} = $2 WHERE name = $1`, [name, reset]);
   }
 
   // ---- per-run bearer tokens for the event sink
