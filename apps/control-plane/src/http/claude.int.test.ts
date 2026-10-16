@@ -39,7 +39,7 @@ const fakeFetch = (async (_url: string, init: RequestInit) => {
   return new Response("{}", { headers: Object.fromEntries(Object.entries(h).map(([k, v]) => [`anthropic-ratelimit-unified-${k}`, v])) });
 }) as unknown as typeof fetch;
 
-const TOKENS: Record<string, string> = { work: "sk-ant-WORKSECRET", personal: "sk-ant-PERSONALSECRET" };
+const TOKENS: Record<string, string> = { work: "fake-work-token", personal: "fake-personal-token" };
 const ok = (u5: number, u7 = 0.1, r5 = R5) => ({ status: "allowed", "5h-status": "allowed", "5h-utilization": String(u5), "5h-reset": epoch(r5), "7d-status": "allowed", "7d-utilization": String(u7), "7d-reset": epoch(R7), "overage-status": "rejected", "representative-claim": "five_hour" });
 const out = (r5 = R5) => ({ ...ok(1), status: "rejected", "5h-status": "rejected" , "5h-reset": epoch(r5) });
 
