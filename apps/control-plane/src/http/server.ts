@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { resolveRole, roleGrants, type Employee, type Orchestrator, type Role, type RunnerEvent } from "@ai-employee/core";
 import type { Config } from "../config.js";
@@ -286,15 +286,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return { warm, active: active.map(activeTaskView), recent: recent.map(recentTaskView), backlogs };
   });
 
-  // ---- Claude subscription accounts: usage and runtime settings (no login, like /runtime: restrict at the network layer)
-  app.get("/usage", async () => claude.snapshot());
-  app.post("/usage/refresh", async () => {
+  // ---- Claude subscription accounts: usage and runtime settings. With ADMIN_TOKEN set they need
+  // `Authorization: Bearer <ADMIN_TOKEN>`; without it they are open like /runtime (restrict at the network layer).
+  // PUT /settings/claude can enable paid overage, so set ADMIN_TOKEN wherever the network is not locked down.
+  const admin = (req: FastifyRequest, reply: FastifyReply): boolean => {
+    if (!config.ADMIN_TOKEN) return true;
+    const got = Buffer.from(req.headers.authorization ?? "");
+    const want = Buffer.from(`Bearer ${config.ADMIN_TOKEN}`);
+    if (got.length === want.length && timingSafeEqual(got, want)) return true;
+    reply.code(401).send({ error: "admin token required" });
+    return false;
+  };
+  app.get("/usage", async (req, reply) => (admin(req, reply) ? claude.snapshot() : reply));
+  app.post("/usage/refresh", async (req, reply) => {
+    if (!admin(req, reply)) return reply;
     await claude.refresh();
     return claude.snapshot();
   });
-  app.get("/settings/claude", async () => claude.settings());
+  app.get("/settings/claude", async (req, reply) => (admin(req, reply) ? claude.settings() : reply));
   // Any subset of the settings; omitted fields keep their value. Takes effect on the next decision, no restart.
   app.put("/settings/claude", async (req, reply) => {
+    if (!admin(req, reply)) return reply;
     try {
       return await claude.updateSettings(req.body ?? {});
     } catch (e) {

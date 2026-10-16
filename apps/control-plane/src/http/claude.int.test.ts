@@ -129,6 +129,19 @@ describe("claude accounts", () => {
     });
   });
 
+  it("admin routes need the admin token when ADMIN_TOKEN is set", async () => {
+    const locked = buildServer({ config: { ...config, ADMIN_TOKEN: "test-admin-token-123" }, ledger, orchestrator: new DbosOrchestrator(ledger), employees: new Map([["dev", employee]]), slack: new NoopSlackClient(), clickup, claude: new ClaudeService({ config, ledger, clickup, fetch: fakeFetch, now: () => NOW }) });
+    const bearer = { authorization: "Bearer test-admin-token-123" };
+    for (const [method, url] of [["GET", "/usage"], ["GET", "/settings/claude"], ["PUT", "/settings/claude"], ["POST", "/usage/refresh"]] as const) {
+      const body = method === "PUT" ? { payload: {} } : {};
+      expect((await locked.inject({ method, url, ...body })).statusCode, `${method} ${url} without token`).toBe(401);
+      expect((await locked.inject({ method, url, headers: { authorization: "Bearer wrong" }, ...body })).statusCode).toBe(401);
+    }
+    expect((await locked.inject({ method: "GET", url: "/settings/claude", headers: bearer })).statusCode).toBe(200);
+    expect((await locked.inject({ method: "PUT", url: "/settings/claude", headers: bearer, payload: { allowOverage: false } })).statusCode).toBe(200);
+    await locked.close();
+  });
+
   describe("usage", () => {
     it("POST /usage/refresh probes each account and GET /usage returns snapshots without tokens", async () => {
       fake.work = ok(0.85);

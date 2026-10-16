@@ -13,6 +13,8 @@ const Env = z.object({
   /** From `claude setup-token` (Pro/Max/Team/Enterprise). One-year OAuth token; shares the subscription's usage limits. */
   CLAUDE_CODE_OAUTH_TOKEN: z.string().default(""),
   /** Minutes between Claude account usage probes (accounts come from CLAUDE_CODE_OAUTH_TOKEN_<NAME> env vars). */
+  /** Bearer token for the admin routes (/usage, /settings/claude). Empty = no in-app check (restrict at the network layer). */
+  ADMIN_TOKEN: z.string().default(""),
   CLAUDE_USAGE_CHECK_MIN: z.coerce.number().int().min(1).max(59).default(5),
   RUNNER_IMAGE: z.string().default("ai-employee-runner:dev"),
   /** JSON map of imageRef -> image, e.g. {"runner-ops":"<registry>/runner-ops:tag"}. Roles pick one with `imageRef`. */

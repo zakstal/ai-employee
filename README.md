@@ -149,7 +149,7 @@ per window.
 | `preferred` | `[]` | Account names in order of preference; empty = most 5h headroom first. |
 
 **Routes.** `GET /usage` (per-account snapshot and current settings), `POST /usage/refresh` (probe now),
-`GET /settings/claude`, `PUT /settings/claude` (any subset of the settings; unknown keys and bad values are a 400).
+`GET /settings/claude`, `PUT /settings/claude` (any subset of the settings; unknown keys and bad values are a 400). Set `ADMIN_TOKEN` and these routes (and `/usage`, `/usage/refresh`) require `Authorization: Bearer <ADMIN_TOKEN>` — do, unless the network already restricts them: `PUT /settings/claude` can turn on paid overage.
 These have no login, like `/runtime`: restrict them at the network layer. Agents get `GET /agents/self/usage`
 (the `usage_status` MCP tool) and the runner uses `POST /agents/self/limit`; both take the run token.
 
@@ -207,7 +207,7 @@ Open `http://localhost:3000/status` to watch it.
 
 ## Security
 
-Some HTTP routes have **no login**: `POST /tasks`, `GET /tasks/:id`, `/employees/*`, `/runtime`, `/status`, `/stats`, `/usage`, `/settings/claude`.
+Some HTTP routes have **no login**: `POST /tasks`, `GET /tasks/:id`, `/employees/*`, `/runtime`, `/status`, `/stats`, and `/usage`, `/settings/claude` unless `ADMIN_TOKEN` is set.
 Anyone who can reach them can start tasks with your logins. Before exposing the host, restrict those routes (an IP
 allowlist at the proxy, a VPN, or IAP). Webhooks and agent routes have their own secrets.
 
