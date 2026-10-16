@@ -341,7 +341,6 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       expect(t.source).toMatchObject({ channel: "telegram", threadRef: "7002", messageRef: "10" });
       expect(t.role_id).toBe(employee.defaultRole);
       expect((t.result as { text: string }).text).toContain("echo: remember 42");
-      expect((t.result as { text: string }).text).toContain("resume=none ws=conv-");
       // placeholder posted, then edited into the final answer: still exactly one message in this chat
       const mine = telegram.messages.filter((m) => m.chatId === "7002");
       expect(mine).toHaveLength(1);
@@ -353,6 +352,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       const t2 = await waitFor("telegram:11", ["done"]);
       expect(t2.conversation_id).toBe(convId);
       expect((t2.result as { text: string }).text).toContain("resume=sess-telegram:10");
+      expect((t2.result as { text: string }).text).toContain(`ws=conv-${convId}`);
       await a.close();
     }, 45_000);
 

@@ -1,6 +1,6 @@
 # AI Employee
 
-An AI developer you run on your own cloud. You give it tasks from chat (ClickUp, Slack), over HTTP, on a schedule, or
+An AI developer you run on your own cloud. You give it tasks from chat (ClickUp, Slack, Telegram), over HTTP, on a schedule, or
 from a monitor that watches for errors. Each task runs Claude Code in its own sandbox, with the role, tools, repos and
 logins you configured. It answers in the thread it came from and opens pull requests. It never merges.
 
@@ -196,6 +196,30 @@ curl -s localhost:3000/tasks/http:dev:demo1      # status and result
 ```
 
 Open `http://localhost:3000/status` to watch it.
+
+## Telegram
+
+Talk to your employee 1:1 from Telegram. Private text messages only; it replies in the same chat (a `…` placeholder that
+is edited as it works, then replaced by the answer), and follow-ups continue the same conversation.
+
+1. In Telegram, message **@BotFather**, send `/newbot`, and copy the bot token.
+2. Set the env vars on the control plane:
+   - `TELEGRAM_BOT_TOKEN`: the token from BotFather. Empty disables the channel.
+   - `TELEGRAM_WEBHOOK_SECRET`: any random string (letters, digits, `_`, `-`).
+   - `TELEGRAM_ALLOWED_CHAT_IDS`: comma-separated numeric chat ids. Anyone else is ignored and never answered.
+   - `TELEGRAM_EMPLOYEE_ID`: optional; defaults to `DEFAULT_EMPLOYEE_ID`.
+3. Find your chat id: message your bot once (it will not answer), then open
+   `https://api.telegram.org/bot<token>/getUpdates` and read `message.chat.id` (or ask @userinfobot). Put it in
+   `TELEGRAM_ALLOWED_CHAT_IDS` and restart.
+4. Register the webhook (needs a public HTTPS `PUBLIC_BASE_URL`; never done automatically):
+
+```sh
+node dist/cli/telegram.js set-webhook      # sends ${PUBLIC_BASE_URL}/webhooks/telegram, the secret, allowed_updates ["message"]
+node dist/cli/telegram.js info             # current webhook, pending updates, last error
+node dist/cli/telegram.js delete-webhook
+```
+
+`ask_human` questions from the agent arrive in the chat; your next message is the answer.
 
 ## Deploy
 
