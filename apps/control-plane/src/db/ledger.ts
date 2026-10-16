@@ -88,6 +88,16 @@ export interface Stats {
   topTasks: StatsTopTask[];
 }
 
+export interface AgentMessageRow {
+  id: number;
+  employee_id: string;
+  channel: string;
+  from_task_id: string;
+  to_task_id: string | null;
+  body: { role: "agent"; messageId: string; contextId: string; parts: { kind: "text"; text: string }[] };
+  created_at: Date;
+}
+
 export interface TaskRow {
   id: string;
   employee_id: string;
@@ -269,6 +279,28 @@ export class Ledger {
   async listEvents(taskId: string): Promise<RunnerEvent[]> {
     const r = await this.db.query<{ payload: RunnerEvent }>("SELECT payload FROM task_events WHERE task_id = $1 ORDER BY seq", [taskId]);
     return r.rows.map((x) => x.payload);
+  }
+
+  // ---- agent-to-agent messages (A2A Message shape in `body`)
+  async addMessage(m: { employeeId: string; channel: string; fromTaskId: string; toTaskId?: string | undefined; text: string }): Promise<number> {
+    const messageId = randomBase62(16);
+    const body = { role: "agent", messageId, contextId: m.channel, parts: [{ kind: "text", text: m.text }] };
+    const r = await this.db.query<{ id: string }>(
+      `INSERT INTO agent_messages (employee_id, channel, from_task_id, to_task_id, body) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [m.employeeId, m.channel, m.fromTaskId, m.toTaskId ?? null, JSON.stringify(body)],
+    );
+    return Number(r.rows[0]!.id);
+  }
+
+  /** Messages on a channel after `since`, addressed to everyone or to `taskId`, never the caller's own. Oldest first. */
+  async listMessages(employeeId: string, channel: string, taskId: string, since: number, limit = 100): Promise<AgentMessageRow[]> {
+    const r = await this.db.query<AgentMessageRow & { id: string }>(
+      `SELECT * FROM agent_messages
+       WHERE employee_id = $1 AND channel = $2 AND id > $3 AND from_task_id <> $4 AND (to_task_id IS NULL OR to_task_id = $4)
+       ORDER BY id LIMIT $5`,
+      [employeeId, channel, since, taskId, limit],
+    );
+    return r.rows.map((x) => ({ ...x, id: Number(x.id) }));
   }
 
   // ---- per-run bearer tokens for the event sink

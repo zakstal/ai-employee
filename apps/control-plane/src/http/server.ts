@@ -84,6 +84,14 @@ const CreateAgentBody = z
 
 const AskBody = z.object({ question: z.string().min(1) });
 
+const CHANNEL = z.string().min(1).max(100).regex(/^[a-z0-9._-]+$/);
+const SendMessageBody = z.object({ channel: CHANNEL, text: z.string().min(1).max(8000), to: z.string().min(1).optional() });
+const ReadMessagesQuery = z.object({
+  channel: CHANNEL,
+  since: z.coerce.number().int().nonnegative().default(0),
+  wait: z.coerce.number().int().min(0).max(25).default(0),
+});
+
 interface AgentAuth {
   taskId: string;
   employee: Employee;
@@ -580,6 +588,45 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       await new Promise((r) => setTimeout(r, 500));
     }
     return reply.code(204).send();
+  });
+
+  // Agent-to-agent messages on a named channel, scoped to the employee. `to` omitted = everyone on the channel.
+  app.post("/agents/self/messages", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth) return;
+    const body = SendMessageBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    if (body.data.to) {
+      const target = await ledger.getTask(body.data.to);
+      if (!target || target.employee_id !== auth.employee.id) return reply.code(404).send({ error: "recipient not found" });
+    }
+    const id = await ledger.addMessage({ employeeId: auth.employee.id, channel: body.data.channel, fromTaskId: auth.taskId, toTaskId: body.data.to, text: body.data.text });
+    return reply.code(201).send({ id });
+  });
+
+  // Messages after `since` for this task; long-polls up to `wait` seconds (max 25) when there are none.
+  app.get("/agents/self/messages", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth) return;
+    const q = ReadMessagesQuery.safeParse(req.query);
+    if (!q.success) return reply.code(400).send({ error: q.error.flatten() });
+    const deadline = Date.now() + q.data.wait * 1000;
+    for (;;) {
+      const rows = await ledger.listMessages(auth.employee.id, q.data.channel, auth.taskId, q.data.since);
+      if (rows.length > 0 || Date.now() >= deadline) {
+        return {
+          messages: rows.map((m) => ({
+            id: m.id,
+            from: m.from_task_id,
+            to: m.to_task_id,
+            text: m.body.parts.map((p) => p.text).join("\n"),
+            createdAt: m.created_at,
+            message: m.body,
+          })),
+        };
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
   });
 
   // ---- event sink: runners push normalized events here
