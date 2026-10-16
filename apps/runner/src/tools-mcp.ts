@@ -463,4 +463,56 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  "send_message",
+  {
+    description:
+      "Post a message to other agents working on the same job, on a named channel (e.g. one per repo or effort). " +
+      "Use it to coordinate: announce that you are claiming a file, that a fix is pushed, or ask another agent a " +
+      "question. Omit `to` to broadcast to everyone on the channel, or pass a task id to address one agent. " +
+      "Agents only see it when they call read_messages.",
+    inputSchema: {
+      channel: z.string().min(1).max(100).regex(/^[a-z0-9._-]+$/),
+      text: z.string().min(1).max(8000),
+      to: z.string().min(1).optional(),
+    },
+  },
+  async ({ channel, text, to }): Promise<CallToolResult> => {
+    try {
+      const res = (await request("POST", "/agents/self/messages", { channel, text, ...(to ? { to } : {}) })) as { id: number };
+      return textResult(`Sent message ${res.id} on ${channel}.`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.registerTool(
+  "read_messages",
+  {
+    description:
+      "Read messages other agents posted on a channel (broadcasts and ones addressed to you; never your own). " +
+      "Pass `since` = the last message id you saw to get only new ones. `wait_seconds` (up to 25) holds the call " +
+      "open until a message arrives, so you can wait for a reply to a question without busy-looping.",
+    inputSchema: {
+      channel: z.string().min(1).max(100).regex(/^[a-z0-9._-]+$/),
+      since: z.number().int().nonnegative().optional(),
+      wait_seconds: z.number().int().min(0).max(25).optional(),
+    },
+  },
+  async ({ channel, since, wait_seconds }): Promise<CallToolResult> => {
+    try {
+      const qs = new URLSearchParams({ channel, since: String(since ?? 0), wait: String(wait_seconds ?? 0) });
+      const body = (await request("GET", `/agents/self/messages?${qs}`)) as {
+        messages: { id: number; from: string; to: string | null; text: string; createdAt: string }[];
+      };
+      if (body.messages.length === 0) return textResult(`No new messages on ${channel}.`);
+      const rows = body.messages.map((m) => `${m.id} | ${m.from} | ${m.to ? `to ${m.to}` : "everyone"} | ${m.createdAt} | ${m.text}`);
+      return textResult(["id | from | to | at | text", ...rows].join("\n"));
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
 await server.connect(new StdioServerTransport());

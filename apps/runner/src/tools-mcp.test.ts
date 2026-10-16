@@ -78,7 +78,7 @@ function firstText(result: unknown): string {
 }
 
 describe("ai_employee MCP tools", () => {
-  it("lists exactly the schedule and agent-delegation tools", async () => {
+  it("lists exactly the schedule, agent-delegation and messaging tools", async () => {
     const cp = await fakeControlPlane((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end("{}");
@@ -98,6 +98,8 @@ describe("ai_employee MCP tools", () => {
         "list_monitors",
         "list_schedules",
         "list_tasks",
+        "read_messages",
+        "send_message",
         "spawn_agent",
         "start_workstream",
         "wait_for",
@@ -412,6 +414,61 @@ describe("ai_employee MCP tools", () => {
       expect(text).toContain("4 | tool_use | Bash");
       expect(text).toContain("pnpm test");
       expect(text).toContain("5 | assistant_text | Tests pass");
+    } finally {
+      await close();
+      await cp.close();
+    }
+  }, 20_000);
+
+  it("send_message POSTs channel/text/to and reports the id", async () => {
+    const cp = await fakeControlPlane((_req, res) => {
+      res.writeHead(201, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: 7 }));
+    });
+    const { client, close } = await connectClient(cp.port);
+    try {
+      const result = await client.callTool({ name: "send_message", arguments: { channel: "repo.x", text: "claiming a.ts", to: "ag_1" } });
+      expect(cp.requests[0]?.method).toBe("POST");
+      expect(cp.requests[0]?.url).toBe("/agents/self/messages");
+      expect(cp.requests[0]?.authorization).toBe("Bearer test-run-token");
+      expect(cp.requests[0]?.taskId).toBe("task-1");
+      expect(cp.requests[0]?.body).toEqual({ channel: "repo.x", text: "claiming a.ts", to: "ag_1" });
+      expect(firstText(result)).toBe("Sent message 7 on repo.x.");
+      const bad = await client.callTool({ name: "send_message", arguments: { channel: "Bad Channel", text: "x" } });
+      expect(bad.isError).toBe(true);
+    } finally {
+      await close();
+      await cp.close();
+    }
+  }, 20_000);
+
+  it("read_messages GETs with since/wait and renders one row per message", async () => {
+    const cp = await fakeControlPlane((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ messages: [{ id: 8, from: "ag_2", to: null, text: "fix pushed", createdAt: "2026-10-16T00:00:00Z", message: {} }] }));
+    });
+    const { client, close } = await connectClient(cp.port);
+    try {
+      const result = await client.callTool({ name: "read_messages", arguments: { channel: "repo.x", since: 5, wait_seconds: 10 } });
+      expect(cp.requests[0]?.method).toBe("GET");
+      expect(cp.requests[0]?.url).toBe("/agents/self/messages?channel=repo.x&since=5&wait=10");
+      expect(firstText(result)).toContain("8 | ag_2 | everyone | 2026-10-16T00:00:00Z | fix pushed");
+    } finally {
+      await close();
+      await cp.close();
+    }
+  }, 20_000);
+
+  it("read_messages says so when the channel is quiet", async () => {
+    const cp = await fakeControlPlane((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ messages: [] }));
+    });
+    const { client, close } = await connectClient(cp.port);
+    try {
+      const result = await client.callTool({ name: "read_messages", arguments: { channel: "repo.x" } });
+      expect(cp.requests[0]?.url).toBe("/agents/self/messages?channel=repo.x&since=0&wait=0");
+      expect(firstText(result)).toBe("No new messages on repo.x.");
     } finally {
       await close();
       await cp.close();

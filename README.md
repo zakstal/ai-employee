@@ -106,6 +106,20 @@ A cron time, a role and a prompt. At that time the role runs and posts its resul
 Tasks started with `"managedBy": "manager"` count as backlog work. When one finishes, the manager wakes, looks at the
 backlog described in its prompt, and starts the next item that's ready.
 
+## Agents talking to each other
+
+Agents run as separate tasks that cannot receive inbound requests, so the control plane keeps a message board per
+employee. Any role can use it, no capability needed:
+
+- `send_message(channel, text, to?)`: post to a channel (`[a-z0-9._-]`, up to 100 chars; text up to 8000). Leave `to` empty
+  to reach everyone on the channel, or pass a task id to address one agent.
+- `read_messages(channel, since?, wait_seconds?)`: new messages from others (never your own). Pass the last id you saw
+  as `since`. `wait_seconds` (up to 25) holds the call open until something arrives.
+
+Use it to claim shared files, announce pushed fixes, or ask another agent a question. Messages are stored in
+`agent_messages` in the A2A `Message` shape (`role`, `messageId`, `contextId` = channel, `parts`), so an A2A endpoint
+can be added later. Routes: `POST` and `GET /agents/self/messages`, authenticated like the other `/agents/self/*` routes.
+
 ## Run it locally
 
 You need Node 22+, pnpm, Docker and the `claude` CLI, plus an Anthropic API key or a `claude setup-token` token.
