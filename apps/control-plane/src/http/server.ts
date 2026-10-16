@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { resolveRole, roleGrants, type Employee, type Orchestrator, type Role, type RunnerEvent } from "@ai-employee/core";
+import { resolveRole, roleGrants, type Employee, type Orchestrator, type Role, type RunnerEvent, type TaskSource } from "@ai-employee/core";
 import type { Config } from "../config.js";
 import { randomBase62, type DeliverTo, type Ledger, type TaskRow } from "../db/ledger.js";
 import { verifySlackSignature } from "../slack/verify.js";
@@ -14,6 +14,8 @@ import { NoopTelegramClient, type TelegramClient } from "../telegram/client.js";
 import { verifyTelegramSecret } from "../telegram/verify.js";
 import { telegramTrigger } from "../telegram/update.js";
 import { deliverTelegram } from "../telegram/send.js";
+import { ownerChatId } from "../telegram/owner.js";
+import { messageOwner } from "../alerts.js";
 import { backlogOverview, checkDispatchGuards } from "../backlogs/guards.js";
 import { briefFor } from "../backlogs/render.js";
 import { fill } from "../backlogs/state.js";
@@ -46,6 +48,9 @@ const RunnerEventsBody = z.object({
   events: z.array(z.object({ runId: z.string(), seq: z.number().int(), ts: z.string(), type: z.string() }).passthrough()).max(500),
 });
 
+/** Deliver the finished result to a Telegram chat (no placeholder). `chat` defaults to the owner chat and must be an allowed one. */
+const ReplyTo = z.object({ channel: z.literal("telegram"), chat: z.string().regex(/^-?\d+$/).optional() });
+
 const CreateTaskBody = z.object({
   employeeId: z.string().min(1),
   roleId: z.string().optional(),
@@ -58,6 +63,7 @@ const CreateTaskBody = z.object({
    * is why multi-stage efforts have had to be driven by a script outside the system.
    */
   managedBy: z.string().min(1).optional(),
+  replyTo: ReplyTo.optional(),
 });
 
 const CreateScheduleBody = z.object({
@@ -66,7 +72,7 @@ const CreateScheduleBody = z.object({
   prompt: z.string().min(1),
   roleId: z.string().optional(),
   timezone: z.string().optional(),
-  deliverTo: z.object({ channel: z.string(), threadRef: z.string() }).optional(),
+  deliverTo: z.object({ channel: z.string(), threadRef: z.string().optional() }).optional(),
 });
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "awaiting_input"]);
@@ -89,6 +95,14 @@ const CreateAgentBody = z
   .refine((b) => Number(!!b.role) + Number(!!b.workstream) === 1, { message: "exactly one of role or workstream is required" })
   .refine((b) => !!b.backlog === !!b.item, { message: "backlog and item go together" })
   .refine((b) => !b.backlog || !!b.role, { message: "a backlog item is dispatched by role, not workstream" });
+
+/** start_task: a top-level task as if POSTed to /tasks, by a role holding `operate`. */
+const StartTaskBody = z.object({ role: z.string().min(1), prompt: z.string().min(1), taskKey: z.string().min(1).max(200).optional(), replyTo: ReplyTo.optional() });
+const MessageOwnerBody = z.object({ text: z.string().min(1).max(20_000) });
+const TaskEventsQuery = z.object({ since: z.coerce.number().int().nonnegative().default(0), limit: z.coerce.number().int().min(1).max(200).default(50) });
+
+const MAX_OWNER_MESSAGES_PER_HOUR = 20; // per task
+const PROGRESS_CHARS = 240;
 
 const AskBody = z.object({ question: z.string().min(1) });
 
@@ -166,6 +180,12 @@ function parseStatsRange(query: { since?: string; until?: string }): { since: Da
   return { since, until };
 }
 
+/** One line, whitespace collapsed, clipped. */
+const oneLine = (v: unknown, n: number): string => {
+  const s = String(v ?? "").replace(/\s+/g, " ").trim();
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+};
+
 const WARM_FETCH_TIMEOUT_MS = 2000;
 
 /** The warm runner's own `GET /runs` payload, or `{ error }` if it's unreachable. Never throws. */
@@ -222,7 +242,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const { config, ledger, orchestrator, employees, slack, clickup } = deps;
   const telegram = deps.telegram ?? new NoopTelegramClient();
   const seenUpdates = new Set<number>(); // Telegram retries a webhook that was slow or failed; the task key dedupes too, this also covers answers to ask_human
-  const claude = deps.claude ?? new ClaudeService({ config, ledger, clickup });
+  const claude = deps.claude ?? new ClaudeService({ config, ledger, clickup, telegram });
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 
   // Keep the raw body: Slack signatures are computed over the exact bytes.
@@ -241,19 +261,36 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   app.get("/health", async () => ({ ok: true }));
 
   // ---- generic HTTP trigger (also what tests and cron will use)
+  /** A Telegram chat id to deliver to: the owner chat by default; an explicit one must be allowed. */
+  const telegramTarget = (chat?: string): { chat: string } | { error: string } => {
+    if (!config.TELEGRAM_BOT_TOKEN) return { error: "Telegram is not enabled (TELEGRAM_BOT_TOKEN unset)" };
+    const known = [...config.TELEGRAM_ALLOWED_CHAT_IDS, ...(config.OWNER_TELEGRAM_CHAT_ID ? [config.OWNER_TELEGRAM_CHAT_ID] : [])];
+    if (chat) return known.includes(chat) ? { chat } : { error: `chat ${chat} is not an allowed Telegram chat` };
+    const owner = ownerChatId(config);
+    return owner ? { chat: owner } : { error: "no owner Telegram chat (set TELEGRAM_ALLOWED_CHAT_IDS or OWNER_TELEGRAM_CHAT_ID)" };
+  };
+
+  /** Start a top-level task: id `http:<employee>:<key>`, result delivered to Telegram when `replyTo` says so (no placeholder, so quiet). */
+  const startTopLevelTask = async (employee: Employee, o: { roleId: string; prompt: string; taskKey?: string | undefined; managedBy?: string | undefined; replyTo?: z.infer<typeof ReplyTo> | undefined }) => {
+    let source: TaskSource = o.managedBy ? { channel: "http", managedBy: o.managedBy } : { channel: "http" };
+    if (o.replyTo) {
+      const target = telegramTarget(o.replyTo.chat);
+      if ("error" in target) return { error: target.error } as const;
+      source = { channel: "telegram", threadRef: target.chat, quiet: true, ...(o.managedBy ? { managedBy: o.managedBy } : {}) };
+    }
+    const taskId = `http:${employee.id}:${o.taskKey ?? randomUUID()}`;
+    const res = await orchestrator.startTask(taskId, { employeeId: employee.id, roleId: o.roleId, prompt: o.prompt, source });
+    return { taskId, ...res };
+  };
+
   app.post("/tasks", async (req, reply) => {
     const body = CreateTaskBody.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     const employee = employees.get(body.data.employeeId);
     if (!employee) return reply.code(404).send({ error: "unknown employee" });
-    const taskId = `http:${employee.id}:${body.data.taskKey ?? randomUUID()}`;
-    const res = await orchestrator.startTask(taskId, {
-      employeeId: employee.id,
-      roleId: body.data.roleId ?? employee.defaultRole,
-      prompt: body.data.prompt,
-      source: body.data.managedBy ? { channel: "http", managedBy: body.data.managedBy } : { channel: "http" },
-    });
-    return reply.code(res.started ? 202 : 200).send({ taskId, ...res });
+    const res = await startTopLevelTask(employee, { roleId: body.data.roleId ?? employee.defaultRole, prompt: body.data.prompt, taskKey: body.data.taskKey, managedBy: body.data.managedBy, replyTo: body.data.replyTo });
+    if ("error" in res) return reply.code(400).send({ error: res.error });
+    return reply.code(res.started ? 202 : 200).send(res);
   });
 
   app.get<{ Params: { id: string } }>("/tasks/:id", async (req, reply) => {
@@ -354,9 +391,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (existing.filter((s) => s.enabled && s.source === "runtime").length >= MAX_ENABLED_SCHEDULES) return reply.code(409).send({ error: `max ${MAX_ENABLED_SCHEDULES} enabled schedules per employee` });
     if (existing.some((s) => s.name === body.data.name)) return reply.code(409).send({ error: `schedule "${body.data.name}" already exists; use delete_schedule first` });
 
-    const deliverTo: DeliverTo = body.data.deliverTo ?? source;
-    if ((deliverTo.channel !== "clickup" && deliverTo.channel !== "clickup-chat") || !deliverTo.threadRef) {
-      return reply.code(400).send({ error: "deliverTo must be clickup or clickup-chat with a threadRef" });
+    let deliverTo: DeliverTo = { channel: (body.data.deliverTo ?? source).channel, threadRef: (body.data.deliverTo ?? source).threadRef ?? "" };
+    if (deliverTo.channel === "telegram") {
+      const target = telegramTarget(deliverTo.threadRef || undefined); // no chat = the owner's
+      if ("error" in target) return reply.code(400).send({ error: target.error });
+      deliverTo = { channel: "telegram", threadRef: target.chat };
+    } else if ((deliverTo.channel !== "clickup" && deliverTo.channel !== "clickup-chat") || !deliverTo.threadRef) {
+      return reply.code(400).send({ error: "deliverTo must be clickup or clickup-chat with a threadRef, or telegram" });
     }
 
     const schedule = await ledger.createSchedule({
@@ -491,7 +532,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const bl = employee.backlogs?.[id];
       if (!bl) return reply.code(400).send({ error: `employee ${employee.id} has no backlog ${id}` });
       if (targetRoleId !== bl.dispatch.role) return reply.code(400).send({ error: `backlog ${id} dispatches role ${bl.dispatch.role}, not ${targetRoleId}` });
-      const guard = await checkDispatchGuards({ ledger, config, clickup }, employee, id, item);
+      const guard = await checkDispatchGuards({ ledger, config, clickup, telegram }, employee, id, item);
       if (guard) return reply.code(409).send({ error: guard });
       if ((await ledger.tasksByBacklog(employee.id, id)).some((t) => t.item === item && ACTIVE_STATUSES.has(t.status))) return reply.code(409).send({ error: `guard: item ${item} is already running` });
       const notes = body.data.brief.trim();
@@ -559,12 +600,143 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return { agentId: t.id, status: t.status, events: events.slice(-limit) };
   });
 
-  // The manager coordinates work it did not spawn in this run, so it needs the employee's whole recent
-  // history rather than its own children. Capability-gated: no other role gets it.
+  // ---- operating the employee from chat. Status is read-only (every role); the operator routes need the `operate` capability.
+  const requireCapability = (auth: AgentAuth, reply: FastifyReply, cap: string): boolean => {
+    if (auth.role.capabilities.includes(cap)) return true;
+    reply.code(403).send({ error: `role ${auth.role.id} lacks the "${cap}" capability` });
+    return false;
+  };
+
+  // Everything in flight for this employee (any source), what finished in the last 24 h, and Claude account headroom.
+  app.get("/agents/self/status", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth) return;
+    const now = Date.now();
+    const [active, finished, snap] = await Promise.all([
+      ledger.activeTasks(auth.employee.id),
+      ledger.finishedTasksSince(auth.employee.id, new Date(now - 24 * 3600_000), 50),
+      claude.snapshot(),
+    ]);
+    const progress = await ledger.taskProgress([...active, ...finished].map((t) => t.id));
+    return {
+      employee: auth.employee.id,
+      now: new Date(now).toISOString(),
+      currentTask: auth.taskId,
+      active: await Promise.all(
+        active.map(async (t) => ({
+          id: t.id,
+          role: t.role_id,
+          status: t.status,
+          channel: t.source.channel,
+          parent: t.parent_task_id,
+          root: t.parent_task_id ? (await findRootTask(ledger, t.id)).id : t.id,
+          startedAt: t.created_at,
+          updatedAt: t.updated_at,
+          ageSec: Math.max(0, Math.round((now - t.created_at.getTime()) / 1000)),
+          account: t.claude_account,
+          costUsd: progress.get(t.id)?.costUsd ?? null,
+          progress: oneLine(progress.get(t.id)?.text, PROGRESS_CHARS) || null,
+          ...(t.status === "awaiting_input" && t.question ? { question: oneLine(t.question, PROGRESS_CHARS) } : {}),
+        })),
+      ),
+      finished: finished.map((t) => ({
+        id: t.id,
+        role: t.role_id,
+        status: t.status,
+        channel: t.source.channel,
+        parent: t.parent_task_id,
+        finishedAt: t.updated_at,
+        costUsd: progress.get(t.id)?.costUsd ?? (t.result as { costUsd?: number } | null)?.costUsd ?? null,
+        result: oneLine((t.result as { text?: string } | null)?.text, 160),
+      })),
+      claude: { currentAccount: (await ledger.getTask(auth.taskId))?.claude_account ?? null, ...snap },
+    };
+  });
+
+  // start_task: a top-level task as if POSTed to /tasks.
+  app.post("/operator/tasks", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth || !requireCapability(auth, reply, "operate")) return;
+    const body = StartTaskBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    if (!auth.employee.roles.some((r) => r.id === body.data.role)) return reply.code(400).send({ error: `employee ${auth.employee.id} has no role ${body.data.role}; known: ${auth.employee.roles.map((r) => r.id).join(", ")}` });
+    const res = await startTopLevelTask(auth.employee, { roleId: body.data.role, prompt: body.data.prompt, taskKey: body.data.taskKey, replyTo: body.data.replyTo });
+    if ("error" in res) return reply.code(400).send({ error: res.error });
+    return reply.code(res.started ? 202 : 200).send(res);
+  });
+
+  /** Any task of the caller's employee (not only its own children); undefined otherwise so another employee's tasks look absent. */
+  const employeeTask = async (auth: AgentAuth, id: string) => {
+    const t = await ledger.getTask(id);
+    return t && t.employee_id === auth.employee.id ? t : undefined;
+  };
+
+  app.post<{ Params: { id: string } }>("/operator/tasks/:id/cancel", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth || !requireCapability(auth, reply, "operate")) return;
+    const t = await employeeTask(auth, req.params.id);
+    if (!t) return reply.code(404).send({ error: "not found" });
+    if (t.id === auth.taskId) return reply.code(409).send({ error: "a task cannot cancel itself; finish it instead" });
+    if (t.status === "done" || t.status === "failed" || t.status === "cancelled") return reply.code(202).send({ taskId: t.id, status: t.status });
+    await orchestrator.cancel(t.id);
+    return reply.code(202).send({ taskId: t.id, status: "cancelling" });
+  });
+
+  app.get<{ Params: { id: string } }>("/operator/tasks/:id/events", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth || !requireCapability(auth, reply, "operate")) return;
+    const q = TaskEventsQuery.safeParse(req.query);
+    if (!q.success) return reply.code(400).send({ error: q.error.flatten() });
+    const t = await employeeTask(auth, req.params.id);
+    if (!t) return reply.code(404).send({ error: "not found" });
+    const events = (await ledger.listEvents(t.id)).filter((e) => e.seq > q.data.since);
+    return { taskId: t.id, role: t.role_id, status: t.status, events: events.slice(-q.data.limit) };
+  });
+
+  // Same validation as PUT /settings/claude (the schema); GET returns the settings plus the account snapshot.
+  app.get("/operator/settings/claude", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth || !requireCapability(auth, reply, "operate")) return;
+    return claude.settings();
+  });
+  app.put("/operator/settings/claude", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth || !requireCapability(auth, reply, "operate")) return;
+    if (!req.body || typeof req.body !== "object" || Object.keys(req.body).length === 0) return reply.code(400).send({ error: "no settings given; pass any of limitPolicy, allowOverage, warnAt, preferred" });
+    try {
+      return await claude.updateSettings(req.body);
+    } catch (e) {
+      if (e instanceof z.ZodError) return reply.code(400).send({ error: e.flatten() });
+      throw e;
+    }
+  });
+
+  // ---- message the owner (any role): their Telegram chat, else the ClickUp alert channel. Rate-limited per task.
+  // ponytail: in-memory sliding window per task id, lost on restart; persist if the cap must survive one.
+  const ownerMessages = new Map<string, number[]>();
+  app.post("/agents/self/message-owner", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth) return;
+    const body = MessageOwnerBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    const now = Date.now();
+    const recent = (ownerMessages.get(auth.taskId) ?? []).filter((t) => now - t < 3600_000);
+    if (recent.length >= MAX_OWNER_MESSAGES_PER_HOUR) return reply.code(429).send({ error: `at most ${MAX_OWNER_MESSAGES_PER_HOUR} owner messages per hour per task` });
+    try {
+      const sent = await messageOwner({ config, clickup, telegram }, body.data.text);
+      ownerMessages.set(auth.taskId, [...recent, now]);
+      return reply.code(201).send({ ok: true, ...sent });
+    } catch (e) {
+      const message = (e as Error).message;
+      return reply.code(message.startsWith("no owner channel") ? 409 : 502).send({ error: message });
+    }
+  });
+
+  // The employee's whole recent history rather than just the caller's children (the manager coordinates work it
+  // did not spawn; any role may ask what is going on). Read-only, so no capability.
   app.get<{ Querystring: { since?: string; limit?: string } }>("/tasks/recent", async (req, reply) => {
     const auth = await authenticateAgent(req, reply, ledger, employees);
     if (!auth) return;
-    if (!auth.role.capabilities.includes("backlog")) return reply.code(403).send({ error: `role ${auth.role.id} lacks the "backlog" capability` });
     const hours = Math.min(Number(req.query.since ?? 48) || 48, 24 * 14);
     const limit = Math.min(Number(req.query.limit ?? 100) || 100, 500);
     const rows = await ledger.recentTasksForEmployee(auth.employee.id, new Date(Date.now() - hours * 3600_000), limit);
@@ -841,10 +1013,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return reply.send({ ok: true, routedTo: awaiting.id });
     }
 
+    const roleId = config.TELEGRAM_ROLE || employee.defaultRole;
+    if (!employee.roles.some((r) => r.id === roleId)) {
+      app.log.error({ roleId }, "TELEGRAM_ROLE is not a role of the telegram employee");
+      return reply.send({ ok: true, error: "telegram role not configured" }); // 200: a non-2xx makes Telegram retry
+    }
     const conversationId = await ledger.upsertConversation(employee.id, "telegram", trigger.chatId);
     const res = await orchestrator.startTask(trigger.taskId, {
       employeeId: employee.id,
-      roleId: employee.defaultRole,
+      roleId,
       prompt: trigger.text,
       source: { channel: "telegram", conversationId, threadRef: trigger.chatId, messageRef: trigger.messageId },
     });

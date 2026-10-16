@@ -284,6 +284,34 @@ export class Ledger {
     return r.rows.map((x) => x.payload);
   }
 
+  /** Latest assistant_text (the "what is it doing now" line) and the cost from the result event, per task. Running tasks have no cost: the harness reports it once, at the end. */
+  async taskProgress(taskIds: string[]): Promise<Map<string, { text?: string; costUsd?: number }>> {
+    const out = new Map<string, { text?: string; costUsd?: number }>();
+    if (taskIds.length === 0) return out;
+    const text = await this.db.query<{ task_id: string; text: string }>(
+      `SELECT DISTINCT ON (task_id) task_id, payload->>'text' AS text FROM task_events
+         WHERE task_id = ANY($1) AND type = 'assistant_text' ORDER BY task_id, seq DESC`,
+      [taskIds],
+    );
+    for (const r of text.rows) out.set(r.task_id, { text: r.text });
+    const cost = await this.db.query<{ task_id: string; cost: number | null }>(
+      `SELECT task_id, SUM((payload->>'costUsd')::float8) AS cost FROM task_events
+         WHERE task_id = ANY($1) AND type = 'result' GROUP BY task_id`,
+      [taskIds],
+    );
+    for (const r of cost.rows) if (r.cost !== null) out.set(r.task_id, { ...out.get(r.task_id), costUsd: r.cost });
+    return out;
+  }
+
+  /** Tasks of one employee that reached a terminal state since `since`, most recently finished first. */
+  async finishedTasksSince(employeeId: string, since: Date, limit: number): Promise<TaskRow[]> {
+    const r = await this.db.query<TaskRow>(
+      "SELECT * FROM tasks WHERE employee_id = $1 AND status IN ('done','failed','cancelled') AND updated_at >= $2 ORDER BY updated_at DESC LIMIT $3",
+      [employeeId, since, limit],
+    );
+    return r.rows;
+  }
+
   // ---- agent-to-agent messages (A2A Message shape in `body`)
   async addMessage(m: { employeeId: string; channel: string; fromTaskId: string; toTaskId?: string | undefined; text: string }): Promise<number> {
     const messageId = randomBase62(16);
@@ -336,20 +364,20 @@ export class Ledger {
     await this.db.query(
       `INSERT INTO claude_account_usage (name, fingerprint, unified_status, representative_claim,
          five_hour_status, five_hour_utilization, five_hour_reset, seven_day_status, seven_day_utilization, seven_day_reset,
-         overage_status, overage_utilization, overage_reset, overage_disabled_reason, checked_at, last_error)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+         overage_status, overage_utilization, overage_reset, overage_disabled_reason, overage_in_use, checked_at, last_error)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        ON CONFLICT (name) DO UPDATE SET fingerprint = EXCLUDED.fingerprint, unified_status = EXCLUDED.unified_status,
          representative_claim = EXCLUDED.representative_claim, five_hour_status = EXCLUDED.five_hour_status,
          five_hour_utilization = EXCLUDED.five_hour_utilization, five_hour_reset = EXCLUDED.five_hour_reset,
          seven_day_status = EXCLUDED.seven_day_status, seven_day_utilization = EXCLUDED.seven_day_utilization,
          seven_day_reset = EXCLUDED.seven_day_reset, overage_status = EXCLUDED.overage_status,
          overage_utilization = EXCLUDED.overage_utilization, overage_reset = EXCLUDED.overage_reset,
-         overage_disabled_reason = EXCLUDED.overage_disabled_reason, checked_at = EXCLUDED.checked_at, last_error = EXCLUDED.last_error`,
+         overage_disabled_reason = EXCLUDED.overage_disabled_reason, overage_in_use = EXCLUDED.overage_in_use, checked_at = EXCLUDED.checked_at, last_error = EXCLUDED.last_error`,
       [
         u.name, u.fingerprint, u.unifiedStatus ?? null, u.representativeClaim ?? null,
         u.fiveHour.status ?? null, u.fiveHour.utilization ?? null, u.fiveHour.reset ?? null,
         u.sevenDay.status ?? null, u.sevenDay.utilization ?? null, u.sevenDay.reset ?? null,
-        u.overage.status ?? null, u.overage.utilization ?? null, u.overage.reset ?? null, u.overage.disabledReason ?? null,
+        u.overage.status ?? null, u.overage.utilization ?? null, u.overage.reset ?? null, u.overage.disabledReason ?? null, u.overage.inUse ?? null,
         u.checkedAt ?? new Date(), u.lastError ?? null,
       ],
     );
@@ -379,7 +407,7 @@ export class Ledger {
       representativeClaim: t(x.representative_claim),
       fiveHour: { status: t(x.five_hour_status), utilization: n(x.five_hour_utilization), reset: d(x.five_hour_reset) },
       sevenDay: { status: t(x.seven_day_status), utilization: n(x.seven_day_utilization), reset: d(x.seven_day_reset) },
-      overage: { status: t(x.overage_status), utilization: n(x.overage_utilization), reset: d(x.overage_reset), disabledReason: t(x.overage_disabled_reason) },
+      overage: { status: t(x.overage_status), utilization: n(x.overage_utilization), reset: d(x.overage_reset), disabledReason: t(x.overage_disabled_reason), inUse: typeof x.overage_in_use === "boolean" ? x.overage_in_use : undefined },
       checkedAt: d(x.checked_at),
       lastError: t(x.last_error),
     }));

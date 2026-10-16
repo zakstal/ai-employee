@@ -94,7 +94,7 @@ A role is a lookup entry: the same trigger and role always produce the same sand
 | `timeoutSec` | `1800` | Hard time limit for one run. Also sets the run token lifetime (this plus 10 minutes). |
 | `credentials` | `[]` | Credential grants. See [Credentials](#credentials). |
 | `repos` | `[]` | Repositories cloned before the agent starts. See [Repos](#repos). |
-| `capabilities` | `[]` | Extra control-plane powers: `agents`, `schedules`, `monitors`, `backlog`. See [Tools and capabilities](#tools-and-capabilities). |
+| `capabilities` | `[]` | Extra control-plane powers: `agents`, `schedules`, `monitors`, `backlog`, `operate`. See [Tools and capabilities](#tools-and-capabilities). |
 | `canSchedule` | `[]` | Role ids this role may create schedules for, besides itself. |
 | `canSpawn` | `[]` | Role ids this role may start as child agents. |
 
@@ -132,17 +132,19 @@ A reply that is exactly `NOISE` (or `IDLE` for the manager) from a quiet, machin
 `--permission-prompts none`, so anything not allowed is denied. Shell access is per command pattern: `"Bash(git *)"` allows git and
 nothing else. MCP tools are allowed by name pattern: `"mcp__clickup__*"`.
 
-`capabilities` adds a built-in MCP server named `ai_employee` (command `ai-employee-tools`, shipped in the runner image). It is
-attached when the role lists any of `schedules`, `agents`, `monitors` or `backlog`, and `mcp__ai_employee__*` is added to the allowlist
-automatically. The server calls back to the control plane with a per-run token. The server lists all its tools to any such role; the
-control plane decides on each call.
+Every role gets a built-in MCP server named `ai_employee` (command `ai-employee-tools`, shipped in the runner image), and
+`mcp__ai_employee__*` is added to the allowlist automatically. The server calls back to the control plane with a per-run token. It
+lists all its tools to every role; the control plane decides on each call. Three tools need no capability: `employee_status`,
+`list_tasks` and `message_owner`.
 
 | capability | tools | enforced by the control plane |
 |---|---|---|
 | `agents` | `spawn_agent(role, brief)`, `start_workstream(workstream, brief)`, `wait_for`, `agent_events`, `cancel_agent`, `list_agents`, `ask_human` | spawning needs `agents` and the target in `canSpawn`; at most 2 levels deep and 4 active children per task |
 | `schedules` | `create_schedule`, `list_schedules`, `delete_schedule` | creating needs `schedules`; target role must be the caller or in `canSchedule` |
 | `monitors` | `list_monitors`, `enable_monitor`, `disable_monitor` | all three need `monitors` |
-| `backlog` | `list_tasks` (every recent task for the employee) | needs `backlog` |
+| `backlog` | manager backlog dispatch (`spawn_agent` with `backlog` / `item`) | needs `agents`; the manager role only |
+| `operate` | `start_task`, `cancel_task`, `task_events`, `claude_settings` | all four need `operate`; they act on any task of the employee. See the README section "Operating the employee from chat" |
+| (none) | `employee_status`, `list_tasks`, `message_owner` | any role; `message_owner` is rate-limited to 20 per hour per task |
 
 `ask_human(question)` posts the question to the ClickUp task or chat channel the work started in and pauses the task until someone replies
 there. It only works on the server, so **a role that never gets the `ai_employee` server cannot call it**. In `dev.yaml` the stage roles
@@ -315,7 +317,7 @@ schedules:
     timezone: America/Los_Angeles   # default DEFAULT_TZ
     role: manager
     prompt: "..."                   # or promptFile: prompts/x.md (exactly one)
-    deliverTo: { channel: clickup-chat, threadRef: <thread id> }   # clickup | clickup-chat
+    deliverTo: { channel: clickup-chat, threadRef: <thread id> }   # clickup | clickup-chat | telegram (threadRef optional: the owner chat)
     enabled: true                   # default true
 ```
 
@@ -329,13 +331,13 @@ floor and the role; `config resolve` lists `schedulesInConfig`, and with `--live
   "every weekday at 07:00 summarise open PRs here".
 - `name` is a slug (`[a-z0-9-]`, 3 to 40 chars), unique per employee. `cron` is a 5-field crontab; two consecutive fires must be at
   least 15 minutes apart. `timezone` defaults to `America/Los_Angeles`. `role` defaults to the caller; another role needs to be in the caller's `canSchedule`.
-- Results are delivered to the originating ClickUp task or chat thread. The thread must be a ClickUp one (`deliverTo` must be
+- Results are delivered to the originating ClickUp task or chat thread, or to Telegram: `deliverTo: { channel: telegram }` (a schedule created from a Telegram chat defaults to that chat; with no chat it means the owner's). Otherwise the thread must be a ClickUp one (`deliverTo` must be
   `clickup` or `clickup-chat`), so a schedule cannot be created from a Slack or HTTP conversation.
 - At most 20 enabled runtime schedules per employee (config ones do not count).
 - List with `list_schedules` or `GET /employees/:id/schedules`; remove with `delete_schedule`.
 - The tick fires due schedules every minute, as quiet tasks.
 
-The daily digest is separate: if `ALERT_CHANNEL_ID` is set, the control plane posts task counts, cost and PR links for the last 24 hours at
+The daily digest is separate: if `ALERT_CHANNEL_ID` is set (or `ALERT_TELEGRAM=1`, which sends it to the owner's Telegram chat), the control plane posts task counts, cost and PR links for the last 24 hours at
 `DIGEST_CRON` (default `0 8 * * *`) in `DIGEST_TZ`.
 
 ## Manager and backlogs

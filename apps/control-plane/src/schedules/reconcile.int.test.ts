@@ -69,4 +69,10 @@ describe("reconcileSchedules", () => {
     await expect(run(mk({ bad: { ...nightly, cron: "* * * * *" } }))).rejects.toThrow(/15 minutes/);
     await expect(run(mk({ bad: { ...nightly, role: "ghost" } }))).rejects.toThrow(/unknown role/);
   });
+
+  it("a telegram schedule without a chat is stored with an empty threadRef (resolved to the owner chat when it fires)", async () => {
+    await run(mk({ nightly, tgdigest: { ...nightly, deliverTo: { channel: "telegram" } } }));
+    const r = (await rows()).find((x) => x.name === "tgdigest")!;
+    expect(r.deliver_to).toEqual({ channel: "telegram", threadRef: "" });
+  });
 });

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { renderStatus, type StatusBody } from "./status-render.js";
 
 /**
  * Stdio MCP server letting the agent manage its own cron schedules via the
@@ -212,7 +213,7 @@ server.registerTool(
   {
     description:
       "Every recent task for this employee, not just your own children: what ran, which role, how it ended. " +
-      "Use it to establish what is actually done before dispatching anything. Requires the backlog capability.",
+      "Use it to establish what is actually done before dispatching anything. Read-only; any role.",
     inputSchema: { since_hours: z.number().int().positive().max(336).optional(), limit: z.number().int().positive().max(500).optional() },
   },
   async ({ since_hours, limit }): Promise<CallToolResult> => {
@@ -551,6 +552,140 @@ server.registerTool(
       return textResult(
         [`limit policy: ${body.settings.limitPolicy}; overage ${body.settings.allowOverage ? "allowed" : "not allowed"}`, "account | state | 5h | 7d | overage | checked", ...rows].join("\n"),
       );
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.registerTool(
+  "employee_status",
+  {
+    description:
+      "Everything happening right now, in one compact report: every running/queued/awaiting task of this employee from any source " +
+      "(chat, ClickUp, Slack, Telegram, schedules, subagents) with role, age, Claude account, cost and its latest progress line; " +
+      "the last 24 h of finished tasks with one-line results; and Claude account usage (5h / 7d, resets, availability) with the " +
+      "current settings. Use it to answer \"what is going on?\". Read-only; any role.",
+    inputSchema: {},
+  },
+  async (): Promise<CallToolResult> => {
+    try {
+      return textResult(renderStatus((await request("GET", "/agents/self/status")) as StatusBody));
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.registerTool(
+  "message_owner",
+  {
+    description:
+      "Send the owner a message on their own channel (their Telegram chat; the ClickUp alert channel if Telegram is not set up). " +
+      "Use it to report something they should know without being asked: a result, a blocker, a decision needed. Plain text; long " +
+      "text is split. Rate-limited per task, so batch updates instead of narrating.",
+    inputSchema: { text: z.string().min(1).max(20000) },
+  },
+  async ({ text }): Promise<CallToolResult> => {
+    try {
+      const r = (await request("POST", "/agents/self/message-owner", { text })) as { channel: string; parts: number };
+      return textResult(`Sent to the owner via ${r.channel}${r.parts > 1 ? ` (${r.parts} parts)` : ""}.`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.registerTool(
+  "start_task",
+  {
+    description:
+      "Operator tool (needs the `operate` capability). Start a top-level task for a role of this employee, as if POSTed to /tasks. " +
+      "Give a complete prompt. Returns the task id; follow it with employee_status or task_events. Pass reply_to \"telegram\" to have its " +
+      "final result delivered to the owner's Telegram chat; without it the result is only stored. task_key makes the call idempotent.",
+    inputSchema: {
+      role: z.string().min(1),
+      prompt: z.string().min(1),
+      task_key: z.string().min(1).max(200).optional(),
+      reply_to: z.enum(["telegram"]).optional(),
+    },
+  },
+  async ({ role, prompt, task_key, reply_to }): Promise<CallToolResult> => {
+    try {
+      const r = (await request("POST", "/operator/tasks", {
+        role,
+        prompt,
+        ...(task_key ? { taskKey: task_key } : {}),
+        ...(reply_to ? { replyTo: { channel: reply_to } } : {}),
+      })) as { taskId: string; started: boolean; status: string };
+      return textResult(r.started ? `Started ${role} task ${r.taskId}.` : `Task ${r.taskId} already exists (${r.status}); nothing started.`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.registerTool(
+  "cancel_task",
+  {
+    description: "Operator tool (needs `operate`). Stop any running task of this employee by id (not only your own children). Its sandbox is torn down. A finished task is left as is.",
+    inputSchema: { task_id: z.string().min(1) },
+  },
+  async ({ task_id }): Promise<CallToolResult> => {
+    try {
+      const r = (await request("POST", `/operator/tasks/${encodeURIComponent(task_id)}/cancel`, {})) as { status: string };
+      return textResult(`Task ${task_id}: ${r.status}.`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.registerTool(
+  "task_events",
+  {
+    description:
+      "Operator tool (needs `operate`). Recent events (text, tool calls, results) of ANY task of this employee, not only your children. " +
+      "Pass since_seq from the last event you saw to get only what is new.",
+    inputSchema: {
+      task_id: z.string().min(1),
+      since_seq: z.number().int().nonnegative().optional(),
+      limit: z.number().int().positive().max(200).optional(),
+    },
+  },
+  async ({ task_id, since_seq, limit }): Promise<CallToolResult> => {
+    try {
+      const qs = new URLSearchParams({ since: String(since_seq ?? 0), limit: String(limit ?? 30) });
+      const body = (await request("GET", `/operator/tasks/${encodeURIComponent(task_id)}/events?${qs}`)) as { role: string; status: string; events: AgentEvent[] };
+      if (body.events.length === 0) return textResult(`Task ${task_id} (${body.role}) is ${body.status}; no new events.`);
+      const rows = body.events.map((e) => `${e.seq} | ${e.type} | ${summarizeEvent(e)}`);
+      return textResult([`Task ${task_id} (${body.role}) is ${body.status}.`, "seq | type | detail", ...rows].join("\n"));
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.registerTool(
+  "claude_settings",
+  {
+    description:
+      "Operator tool (needs `operate`). Read or change the Claude account settings (they apply from the next decision, no restart): " +
+      "limitPolicy (failover | wait | failover-then-wait | off), allowOverage (spend paid overage when subscriptions are out), " +
+      "warnAt (0..1 utilization that triggers an alert), preferred (account names in order). action \"get\" reads; \"set\" changes only " +
+      "the fields you pass. allowOverage costs money: change it only when the owner asked.",
+    inputSchema: {
+      action: z.enum(["get", "set"]),
+      limitPolicy: z.enum(["failover", "wait", "failover-then-wait", "off"]).optional(),
+      allowOverage: z.boolean().optional(),
+      warnAt: z.number().min(0).max(1).optional(),
+      preferred: z.array(z.string().min(1)).optional(),
+    },
+  },
+  async ({ action, ...patch }): Promise<CallToolResult> => {
+    try {
+      const s = (action === "get" ? await request("GET", "/operator/settings/claude") : await request("PUT", "/operator/settings/claude", patch)) as { limitPolicy: string; allowOverage: boolean; warnAt: number; preferred: string[] };
+      return textResult(`${action === "set" ? "Updated. " : ""}limitPolicy ${s.limitPolicy}; allowOverage ${s.allowOverage}; warnAt ${s.warnAt}; preferred ${s.preferred.join(", ") || "none"}.`);
     } catch (err) {
       return errorResult(err);
     }

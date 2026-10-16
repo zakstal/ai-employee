@@ -2,6 +2,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BacklogSchema, EmployeeSchema, type Employee } from "@ai-employee/core";
 import { NoopClickUpClient } from "../clickup/client.js";
+import { NoopTelegramClient } from "../telegram/client.js";
 import { loadConfig } from "../config.js";
 import { Ledger } from "../db/ledger.js";
 import { resetTestDatabases, TEST_DB_URL, TEST_DBOS_URL } from "../test-support.js";
@@ -65,6 +66,20 @@ describe("flow guards", () => {
     expect(await checkDispatchGuards(d(), e, "bl", "c")).toBe("guard: daily budget: 2/2 tasks");
     expect(await checkDispatchGuards(d(), e, "bl", "c")).toBe("guard: daily budget: 2/2 tasks");
     expect(clickup.chatMessages.filter((m) => m.channelId === "alerts")).toHaveLength(1);
+  });
+
+  it("guard alerts also go to the owner's Telegram chat under ALERT_TELEGRAM=1", async () => {
+    await reset();
+    const tg = new NoopTelegramClient();
+    const tgConfig = loadConfig({ DATABASE_URL: TEST_DB_URL, DBOS_SYSTEM_DATABASE_URL: TEST_DBOS_URL, ALERT_CHANNEL_ID: "alerts", CLICKUP_TEAM_ID: "T", DEFAULT_TZ: "UTC", TELEGRAM_BOT_TOKEN: "fake-telegram-token", TELEGRAM_ALLOWED_CHAT_IDS: "7001", ALERT_TELEGRAM: "1" });
+    const e = mk({ maxTasksPerDay: 1 }, 5);
+    await mkTask("a", "done");
+    const before = clickup.chatMessages.length;
+    expect(await checkDispatchGuards({ ledger, config: tgConfig, clickup, telegram: tg }, e, "bl", "c")).toBe("guard: daily budget: 1/1 tasks");
+    expect(clickup.chatMessages.length - before).toBe(1);
+    expect(tg.messages).toHaveLength(1);
+    expect(tg.messages[0]).toMatchObject({ chatId: "7001" });
+    expect(tg.messages[0]!.text).toContain("backlog bl");
   });
 
   it("daily cost budget blocks", async () => {

@@ -1,7 +1,8 @@
 import { DBOS } from "@dbos-inc/dbos-sdk";
 import type { Config } from "../config.js";
 import type { Stats } from "../db/ledger.js";
-import { deps } from "./deps.js";
+import { deps, telegramClient } from "./deps.js";
+import { alert, alertConfigured } from "../alerts.js";
 
 const PR_URL_RE = /https:\/\/github\.com\/\S+\/pull\/\d+/g;
 
@@ -26,16 +27,16 @@ export function buildDigest(stats: Stats, prs: string[]): string {
   return lines.join("\n");
 }
 
-/** Computes the previous-24h stats and posts the digest. Skips silently when ALERT_CHANNEL_ID is unset. */
+/** Computes the previous-24h stats and posts the digest. Skips silently when there is no alert sink (ALERT_CHANNEL_ID / ALERT_TELEGRAM). */
 export async function postDigest(): Promise<void> {
   const { config, ledger, clickup } = deps();
-  if (!config.ALERT_CHANNEL_ID) return;
+  if (!alertConfigured(config)) return;
   const until = new Date();
   const since = new Date(until.getTime() - 24 * 3_600_000);
   const stats = await ledger.stats(config.DEFAULT_EMPLOYEE_ID, since, until);
   const texts = await ledger.resultTextsSince(config.DEFAULT_EMPLOYEE_ID, since, until);
   const prs = [...new Set(texts.flatMap((t) => t.match(PR_URL_RE) ?? []))];
-  await clickup.postChannelMessage(config.CLICKUP_TEAM_ID, config.ALERT_CHANNEL_ID, buildDigest(stats, prs));
+  await alert({ config, clickup, telegram: telegramClient() }, buildDigest(stats, prs));
 }
 
 async function digestWorkflowBody(): Promise<void> {

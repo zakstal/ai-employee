@@ -38,6 +38,15 @@ describe("environmentFooter", () => {
     expect(f).toContain("spawn_agent");
     expect(f).toContain("az *, gh *");
   });
+
+  it("every role is told about employee_status / list_tasks / message_owner; only `operate` roles about the operator tools", () => {
+    const role = { id: "r", description: "", systemPrompt: "", allowedTools: [], disallowedTools: [], mcpServers: {}, maxTurns: 1, runtime: "k8s", cpu: 1, memoryMb: 1, timeoutSec: 1, credentials: [], repos: [], capabilities: [], canSpawn: [], canSchedule: [] } as unknown as Role;
+    const plain = environmentFooter(role);
+    for (const t of ["employee_status", "list_tasks", "message_owner"]) expect(plain).toContain(t);
+    for (const t of ["start_task", "cancel_task", "task_events", "claude_settings"]) expect(plain).not.toContain(t);
+    const op = environmentFooter({ ...role, capabilities: ["operate"] });
+    for (const t of ["start_task", "cancel_task", "task_events", "claude_settings"]) expect(op).toContain(t);
+  });
 });
 
 describe("resolveImage", () => {

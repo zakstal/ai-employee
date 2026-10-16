@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Stats } from "../db/ledger.js";
-import { buildDigest, crontabToUtc } from "./digest-workflow.js";
+import { buildDigest, crontabToUtc, postDigest } from "./digest-workflow.js";
+import { setWorkflowDeps } from "./deps.js";
+import { NoopClickUpClient } from "../clickup/client.js";
+import { NoopTelegramClient } from "../telegram/client.js";
 
 function stats(overrides: Partial<Stats> = {}): Stats {
   return {
@@ -52,5 +55,35 @@ describe("crontabToUtc", () => {
 
   it("leaves non-numeric hour fields untouched", () => {
     expect(crontabToUtc("*/15 * * * *", "America/Los_Angeles")).toBe("*/15 * * * *");
+  });
+});
+
+describe("postDigest sinks", () => {
+  const ledger = { stats: async () => stats(), resultTextsSince: async () => ["PR https://github.com/acme/repo/pull/7"] };
+  const boot = (config: Record<string, unknown>) => {
+    const clickup = new NoopClickUpClient();
+    const telegram = new NoopTelegramClient();
+    setWorkflowDeps({ config: { DEFAULT_EMPLOYEE_ID: "dev", CLICKUP_TEAM_ID: "T", TELEGRAM_BOT_TOKEN: "fake-telegram-token", TELEGRAM_ALLOWED_CHAT_IDS: ["7001"], OWNER_TELEGRAM_CHAT_ID: "", ...config }, ledger, clickup, telegram } as never);
+    return { clickup, telegram };
+  };
+  it("ClickUp only when ALERT_TELEGRAM is unset", async () => {
+    const { clickup, telegram } = boot({ ALERT_CHANNEL_ID: "alerts" });
+    await postDigest();
+    expect(clickup.chatMessages).toHaveLength(1);
+    expect(telegram.messages).toHaveLength(0);
+  });
+  it("both with ALERT_TELEGRAM; Telegram alone without a ClickUp channel", async () => {
+    const both = boot({ ALERT_CHANNEL_ID: "alerts", ALERT_TELEGRAM: true });
+    await postDigest();
+    expect(both.clickup.chatMessages).toHaveLength(1);
+    expect(both.telegram.messages[0]).toMatchObject({ chatId: "7001", text: expect.stringContaining("Daily digest") });
+    const tgOnly = boot({ ALERT_CHANNEL_ID: "", ALERT_TELEGRAM: true });
+    await postDigest();
+    expect(tgOnly.telegram.messages).toHaveLength(1);
+  });
+  it("no sink: skips silently", async () => {
+    const { clickup, telegram } = boot({ ALERT_CHANNEL_ID: "" });
+    await postDigest();
+    expect(clickup.chatMessages.length + telegram.messages.length).toBe(0);
   });
 });
