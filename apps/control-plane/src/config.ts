@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { claudeAccountsFromEnv, type ClaudeAccount } from "./claude/accounts.js";
 
 const Env = z.object({
   // Not .url(): Cloud SQL socket URLs (postgres://u:p@/db?host=/cloudsql/...) have no host.
@@ -11,6 +12,10 @@ const Env = z.object({
   ANTHROPIC_API_KEY: z.string().default(""),
   /** From `claude setup-token` (Pro/Max/Team/Enterprise). One-year OAuth token; shares the subscription's usage limits. */
   CLAUDE_CODE_OAUTH_TOKEN: z.string().default(""),
+  /** Minutes between Claude account usage probes (accounts come from CLAUDE_CODE_OAUTH_TOKEN_<NAME> env vars). */
+  /** Bearer token for the admin routes (/usage, /settings/claude). Empty = no in-app check (restrict at the network layer). */
+  ADMIN_TOKEN: z.string().default(""),
+  CLAUDE_USAGE_CHECK_MIN: z.coerce.number().int().min(1).max(59).default(5),
   RUNNER_IMAGE: z.string().default("ai-employee-runner:dev"),
   /** JSON map of imageRef -> image, e.g. {"runner-ops":"<registry>/runner-ops:tag"}. Roles pick one with `imageRef`. */
   RUNNER_IMAGES: z.string().default("").transform((v, ctx) => {
@@ -77,8 +82,9 @@ const Env = z.object({
   DEFAULT_TZ: z.string().default("America/Los_Angeles"),
 });
 
-export type Config = z.infer<typeof Env>;
+/** `claudeAccounts` is derived from the whole environment (one `CLAUDE_CODE_OAUTH_TOKEN_<NAME>` per account), not a single variable. */
+export type Config = z.infer<typeof Env> & { claudeAccounts: ClaudeAccount[] };
 export const configDirs = (c: Config): string[] => (c.CONFIG_DIRS || c.ROLES_DIR).split(",").map((s) => s.trim()).filter(Boolean);
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  return Env.parse(env);
+  return { ...Env.parse(env), claudeAccounts: claudeAccountsFromEnv(env) };
 }

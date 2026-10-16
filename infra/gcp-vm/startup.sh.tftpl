@@ -195,7 +195,7 @@ ${host} {
 %{ if api_allow_ips != "" ~}
 	# The routes with no authentication of their own: only from the allowlist.
 	@locked {
-		path /tasks /tasks/* /employees/* /stats /runtime /status /runs/*/view
+		path /tasks /tasks/* /employees/* /stats /runtime /status /runs/*/view /usage /usage/* /settings /settings/*
 		not path /tasks/recent
 		not remote_ip ${api_allow_ips}
 	}

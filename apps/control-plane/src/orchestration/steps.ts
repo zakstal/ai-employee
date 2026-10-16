@@ -6,6 +6,8 @@ import { BOT_MARKER } from "../clickup/chat.js";
 import { backlogPromptState } from "../backlogs/service.js";
 import { afterBacklogTask } from "../backlogs/guards.js";
 import { renderBacklogs } from "../backlogs/render.js";
+import { ClaudeService } from "../claude/service.js";
+import { LIMIT_RE } from "@ai-employee/core";
 import { grantEnvNames, grantPurposes, refreshableGrant, resolveGrantEnv } from "../credentials/index.js";
 
 /**
@@ -32,6 +34,8 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
     ALLOWED_TOOLS: role.allowedTools.join(","),
     DISALLOWED_TOOLS: role.disallowedTools.join(","),
     MAX_TURNS: String(role.maxTurns),
+    // The runner will not sleep through a usage-limit wait that would outlast the sandbox's own timeout.
+    TASK_TIMEOUT_SEC: String(role.timeoutSec),
     MCP_CONFIG: "", // filled below once credentials are known
     EVENT_SINK_URL: `${config.PUBLIC_BASE_URL}/runs/${taskId}/events`,
     RUN_TOKEN: runToken,
@@ -65,6 +69,42 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
     timeoutSec: role.timeoutSec,
     employeeId: employee.id,
   };
+}
+
+/** Roles granted the built-in `claude-subscription` (not an employee-defined login of that name) run on one of the configured Claude accounts. */
+export function usesClaudeAccounts(employee: Employee, role: Role, config: Config): boolean {
+  return roleGrants(role).includes("claude-subscription") && !employee.credentials?.["claude-subscription"] && config.claudeAccounts.length > 0;
+}
+
+export interface AccountPick {
+  /** Account name (never the token: DBOS stores step output). */
+  account?: string;
+  /** No account has headroom and limitPolicy says wait: sleep this long, then pick again. */
+  waitMs?: number;
+  /** No account has headroom and limitPolicy says fail. */
+  error?: string;
+}
+
+/** Chooses the Claude account for a task and records it on the task row. A no-op for roles that don't use one. */
+export async function pickClaudeAccount(taskId: string, input: TaskInput): Promise<AccountPick> {
+  const { config, ledger, employees, clickup } = deps();
+  const employee = employees.get(input.employeeId);
+  if (!employee || !usesClaudeAccounts(employee, resolveRole(employee, input.roleId), config)) return {};
+  const pick = await new ClaudeService({ config, ledger, clickup }).pickForLaunch();
+  if (pick.kind === "account") {
+    await ledger.setTaskClaudeAccount(taskId, pick.account.name);
+    return { account: pick.account.name };
+  }
+  if (pick.kind === "blocked") return pick.waitUntil ? { waitMs: Math.max(1000, pick.waitUntil.getTime() - Date.now()) } : { error: pick.message };
+  return {};
+}
+
+/** The task cannot start (no Claude account available): fail it visibly instead of leaving it queued. */
+export async function failLaunch(taskId: string, input: TaskInput, message: string, ack?: AckRef): Promise<void> {
+  const result: ResultEvent = { runId: taskId, seq: 0, ts: new Date().toISOString(), type: "result", text: message, isError: true };
+  const exit: RunExit = { code: 1, reason: "no-claude-account" };
+  await postResult(taskId, input, exit, result, ack);
+  await finalize(taskId, exit, result, input);
 }
 
 /**
@@ -198,7 +238,7 @@ export async function markRunning(taskId: string, handle: RunHandle): Promise<vo
  * because DBOS persists every step's return value: this step returns only a RunHandle, so no credential value is
  * stored at rest. A rerun after a crash re-resolves (right for per-task minted tokens).
  */
-export async function launchSandbox(spec: RunSpec, runtimeName: string, input: TaskInput): Promise<RunHandle> {
+export async function launchSandbox(spec: RunSpec, runtimeName: string, input: TaskInput, claudeAccount?: string): Promise<RunHandle> {
   const { config, employees, runtimes, secrets } = deps();
   const rt = runtimes[runtimeName];
   if (!rt) throw new Error(`no sandbox runtime registered as ${runtimeName}`);
@@ -206,6 +246,12 @@ export async function launchSandbox(spec: RunSpec, runtimeName: string, input: T
   if (!employee) throw new Error(`unknown employee ${input.employeeId}`);
   const role = resolveRole(employee, input.roleId);
   const grantEnv = await resolveGrantEnv({ employee, role, taskId: spec.runId, config, secrets, fetch, now: () => new Date() }, roleGrants(role));
+  if (claudeAccount) {
+    const account = config.claudeAccounts.find((a) => a.name === claudeAccount);
+    if (!account) throw new Error(`Claude account "${claudeAccount}" is no longer configured`);
+    grantEnv.CLAUDE_CODE_OAUTH_TOKEN = account.token;
+    grantEnv.CLAUDE_ACCOUNT = account.name; // name only: the runner reports it back in events
+  }
   return rt.start({ ...spec, env: { ...spec.env, ...grantEnv } });
 }
 
@@ -365,8 +411,13 @@ export async function finalize(taskId: string, exit: RunExit, result: ResultEven
   // Remember the session this run used (or created) so the conversation's next message resumes it.
   const task = await ledger.getTask(taskId);
   if (task?.conversation_id) {
-    const started = (await ledger.listEvents(taskId)).find((e): e is StartedEvent => e.type === "started");
+    // Last, not first: a run that recovered from a usage limit starts a second turn on the session.
+    const started = (await ledger.listEvents(taskId)).filter((e): e is StartedEvent => e.type === "started" && !!e.sessionId).pop();
     if (started?.sessionId) await ledger.setConversationSession(task.conversation_id, started.sessionId);
+  }
+  // Ended on a usage-limit message (policy off, recoveries used up, wait too long): mark that account out for the next picks.
+  if (!ok && result && LIMIT_RE.test(result.text)) {
+    await new ClaudeService({ config: deps().config, ledger, clickup: deps().clickup }).recordLimitFromResult(taskId, result.text).catch((e) => console.error("record limit failed", e));
   }
   await ledger.setStatus(taskId, ok ? "done" : exit.reason === "cancelled" ? "cancelled" : "failed", {
     result: {

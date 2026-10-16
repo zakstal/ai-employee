@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { resolveRole, roleGrants, type Employee, type Orchestrator, type Role, type RunnerEvent } from "@ai-employee/core";
 import type { Config } from "../config.js";
@@ -16,6 +16,7 @@ import { fill } from "../backlogs/state.js";
 import { validateCron } from "../schedules/cron.js";
 import { providerFor } from "../credentials/index.js";
 import { deps as workflowDeps } from "../orchestration/deps.js";
+import { ClaudeService } from "../claude/service.js";
 import { RUN_HTML } from "./run.html.js";
 import { STATUS_HTML } from "./status.html.js";
 
@@ -26,6 +27,8 @@ export interface ServerDeps {
   employees: Map<string, Employee>;
   slack: SlackClient;
   clickup: ClickUpClient;
+  /** Claude account usage, settings and limit handling. Built from `config` and `ledger` when omitted; tests inject one with a fake fetch. */
+  claude?: ClaudeService;
 }
 
 declare module "fastify" {
@@ -83,6 +86,13 @@ const CreateAgentBody = z
   .refine((b) => !b.backlog || !!b.role, { message: "a backlog item is dispatched by role, not workstream" });
 
 const AskBody = z.object({ question: z.string().min(1) });
+
+/** A runner's account hit its Claude usage limit. `resetsAt` is parsed from the limit message by the runner. */
+const LimitBody = z.object({
+  account: z.string().min(1).optional(),
+  resetsAt: z.string().datetime({ offset: true }).optional(),
+  window: z.enum(["5h", "7d"]).optional(),
+});
 
 const CHANNEL = z.string().min(1).max(100).regex(/^[a-z0-9._-]+$/);
 const SendMessageBody = z.object({ channel: CHANNEL, text: z.string().min(1).max(8000), to: z.string().min(1).optional() });
@@ -205,6 +215,7 @@ function recentTaskView(t: TaskRow): Record<string, unknown> {
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const { config, ledger, orchestrator, employees, slack, clickup } = deps;
+  const claude = deps.claude ?? new ClaudeService({ config, ledger, clickup });
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 
   // Keep the raw body: Slack signatures are computed over the exact bytes.
@@ -273,6 +284,35 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const [warm, active, recent] = await Promise.all([fetchWarmRuns(config), ledger.activeTasks(), ledger.recentTasks(since)]);
     const backlogs = (await Promise.all([...employees.values()].map((e) => backlogOverview({ ledger, config }, e)))).flat();
     return { warm, active: active.map(activeTaskView), recent: recent.map(recentTaskView), backlogs };
+  });
+
+  // ---- Claude subscription accounts: usage and runtime settings. With ADMIN_TOKEN set they need
+  // `Authorization: Bearer <ADMIN_TOKEN>`; without it they are open like /runtime (restrict at the network layer).
+  // PUT /settings/claude can enable paid overage, so set ADMIN_TOKEN wherever the network is not locked down.
+  const admin = (req: FastifyRequest, reply: FastifyReply): boolean => {
+    if (!config.ADMIN_TOKEN) return true;
+    const got = Buffer.from(req.headers.authorization ?? "");
+    const want = Buffer.from(`Bearer ${config.ADMIN_TOKEN}`);
+    if (got.length === want.length && timingSafeEqual(got, want)) return true;
+    reply.code(401).send({ error: "admin token required" });
+    return false;
+  };
+  app.get("/usage", async (req, reply) => (admin(req, reply) ? claude.snapshot() : reply));
+  app.post("/usage/refresh", async (req, reply) => {
+    if (!admin(req, reply)) return reply;
+    await claude.refresh();
+    return claude.snapshot();
+  });
+  app.get("/settings/claude", async (req, reply) => (admin(req, reply) ? claude.settings() : reply));
+  // Any subset of the settings; omitted fields keep their value. Takes effect on the next decision, no restart.
+  app.put("/settings/claude", async (req, reply) => {
+    if (!admin(req, reply)) return reply;
+    try {
+      return await claude.updateSettings(req.body ?? {});
+    } catch (e) {
+      if (e instanceof z.ZodError) return reply.code(400).send({ error: e.flatten() });
+      throw e;
+    }
   });
 
   app.get("/runs/:id/view", async (_req, reply) => {
@@ -588,6 +628,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       await new Promise((r) => setTimeout(r, 500));
     }
     return reply.code(204).send();
+  });
+
+  // Headroom per Claude account, so an agent can look before starting long work. Never includes tokens.
+  app.get("/agents/self/usage", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth) return;
+    return { currentAccount: (await ledger.getTask(auth.taskId))?.claude_account ?? null, ...(await claude.snapshot()) };
+  });
+
+  // The runner's Claude account hit its usage limit: limitPolicy decides failover / wait / exit. A failover reply carries
+  // the other account's token, so this route is run-token authenticated like /credentials/:grant/refresh.
+  app.post("/agents/self/limit", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth) return;
+    const body = LimitBody.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    return claude.onLimit(auth.taskId, { account: body.data.account, window: body.data.window, resetsAt: body.data.resetsAt ? new Date(body.data.resetsAt) : undefined });
   });
 
   // Agent-to-agent messages on a named channel, scoped to the employee. `to` omitted = everyone on the channel.

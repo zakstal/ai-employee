@@ -12,6 +12,7 @@ Derived images (`FROM` the runner image, see [deploy.md](deploy.md#derived-runne
 | `WORKDIR /workspace` | where repos are cloned and the agent works |
 | `ENTRYPOINT ["node", "/app/apps/runner/dist/index.js"]` | do not replace it; add setup as a bootstrap hook |
 | `/etc/ai-employee/bootstrap.d/` | executables here run before the agent starts, in name order (override the directory with `BOOTSTRAP_D_DIR`) |
+| `/etc/ai-employee/token-refresh.d/` | executables here run when the run switches Claude account after a usage limit, in name order, with the new token in `CLAUDE_CODE_OAUTH_TOKEN` (override the directory with `TOKEN_REFRESH_D_DIR`) |
 
 The hook directory is owned by root and not writable by uid 1000. Keep it that way in derived images (`chmod 755`), because hooks run with the run's environment.
 

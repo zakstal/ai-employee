@@ -515,4 +515,46 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  "usage_status",
+  {
+    description:
+      "Show how much of each Claude subscription account's 5-hour and 7-day usage limits is used, when each resets, and which " +
+      "account this task runs on. Check it before starting long or parallel work: if headroom is low, do less or tell the human. " +
+      "Read-only; never shows tokens.",
+    inputSchema: {},
+  },
+  async (): Promise<CallToolResult> => {
+    try {
+      const body = (await request("GET", "/agents/self/usage")) as {
+        currentAccount: string | null;
+        settings: { limitPolicy: string; allowOverage: boolean; warnAt: number; preferred: string[] };
+        accounts: {
+          name: string;
+          available: boolean;
+          availableAgainAt?: string;
+          fiveHour: { status: string | null; utilization: number | null; resetsAt: string | null };
+          sevenDay: { status: string | null; utilization: number | null; resetsAt: string | null };
+          overage: { status: string | null; utilization: number | null };
+          checkedAt: string | null;
+          lastError: string | null;
+        }[];
+      };
+      if (body.accounts.length === 0) return textResult("No Claude subscription accounts are configured.");
+      const pct = (u: number | null) => (u === null ? "?" : `${Math.round(u * 100)}%`);
+      const rows = body.accounts.map(
+        (a) =>
+          `${a.name}${a.name === body.currentAccount ? " (this task)" : ""} | ${a.available ? "available" : `at limit${a.availableAgainAt ? ` until ${a.availableAgainAt}` : ""}`} | ` +
+          `5h ${pct(a.fiveHour.utilization)} resets ${a.fiveHour.resetsAt ?? "?"} | 7d ${pct(a.sevenDay.utilization)} resets ${a.sevenDay.resetsAt ?? "?"} | ` +
+          `overage ${a.overage.status ?? "?"} | checked ${a.checkedAt ?? "never"}${a.lastError ? ` (last error: ${a.lastError})` : ""}`,
+      );
+      return textResult(
+        [`limit policy: ${body.settings.limitPolicy}; overage ${body.settings.allowOverage ? "allowed" : "not allowed"}`, "account | state | 5h | 7d | overage | checked", ...rows].join("\n"),
+      );
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
 await server.connect(new StdioServerTransport());

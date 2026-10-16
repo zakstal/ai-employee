@@ -10,6 +10,7 @@ import { EnvSecretStore, GcpSecretStore } from "./credentials/index.js";
 import { setWorkflowDeps } from "./orchestration/deps.js";
 import { DbosOrchestrator } from "./orchestration/dbos-orchestrator.js";
 import { registerDigestWorkflow } from "./orchestration/digest-workflow.js";
+import { registerUsageWorkflow } from "./orchestration/usage-workflow.js";
 import { loadPlugins, monitorProblems } from "./collectors/index.js";
 import { reconcileSchedules } from "./schedules/reconcile.js";
 import { loadEmployees } from "./roles/load.js";
@@ -58,6 +59,7 @@ async function main(): Promise<void> {
 
   DBOS.setConfig({ name: "ai-employee", systemDatabaseUrl: config.DBOS_SYSTEM_DATABASE_URL });
   registerDigestWorkflow(config);
+  registerUsageWorkflow(config);
   await DBOS.launch();
 
   const app = buildServer({ config, ledger, orchestrator, employees, slack, clickup });
@@ -67,7 +69,7 @@ async function main(): Promise<void> {
   } catch {
     await app.listen({ port: config.PORT, host: "0.0.0.0" });
   }
-  app.log.info({ employees: [...employees.keys()], runtime: config.SANDBOX_RUNTIME }, "control plane up");
+  app.log.info({ employees: [...employees.keys()], runtime: config.SANDBOX_RUNTIME, claudeAccounts: config.claudeAccounts.map((a) => `${a.name}:${a.fingerprint}`) }, "control plane up");
 
   const shutdown = async () => {
     await app.close();
