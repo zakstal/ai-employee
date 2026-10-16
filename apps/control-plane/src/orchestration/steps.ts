@@ -1,6 +1,7 @@
 import { resolveRole, roleGrants, type Employee, type Role, type ResultEvent, type RunExit, type RunHandle, type RunSpec, type StartedEvent, type TaskInput } from "@ai-employee/core";
 import type { Config } from "../config.js";
-import { deps } from "./deps.js";
+import { deps, telegramClient } from "./deps.js";
+import { deliverTelegram, TELEGRAM_ACK_TEXT } from "../telegram/send.js";
 import { requestWake, shouldWake } from "../manager/tick.js";
 import { BOT_MARKER } from "../clickup/chat.js";
 import { backlogPromptState } from "../backlogs/service.js";
@@ -199,8 +200,10 @@ async function enrichChannel(input: TaskInput, resuming: boolean): Promise<strin
 }
 
 export interface AckRef {
-  kind: "chat" | "comment";
+  kind: "chat" | "comment" | "telegram";
   id: string;
+  /** telegram: the chat the placeholder lives in. */
+  chatId?: string;
 }
 
 export const ACK_TEXT = `${BOT_MARKER}…`;
@@ -222,6 +225,10 @@ export async function acknowledge(input: TaskInput): Promise<AckRef | undefined>
     if (input.source.channel === "clickup" && input.source.threadRef) {
       const id = await clickup.postComment(input.source.threadRef, ACK_TEXT);
       return id ? { kind: "comment", id } : undefined;
+    }
+    if (input.source.channel === "telegram" && input.source.threadRef) {
+      const id = await telegramClient().sendMessage(input.source.threadRef, TELEGRAM_ACK_TEXT);
+      return id ? { kind: "telegram", id, chatId: input.source.threadRef } : undefined;
     }
   } catch {
     /* best effort */
@@ -291,7 +298,8 @@ export async function waitForExit(handle: RunHandle, ack?: AckRef, taskId?: stri
     const activity = taskId ? await currentActivity(taskId) : "";
     if (stopped) return; // don't let a late spinner frame overwrite the final answer
     const text = `${BOT_MARKER}*${verb}…*${activity ? ` ${activity}` : ""}`;
-    if (ack?.kind === "chat") await clickup.updateChannelMessage(config.CLICKUP_TEAM_ID, ack.id, text).catch(() => {});
+    if (ack?.kind === "telegram" && ack.chatId) await telegramClient().editMessageText(ack.chatId, ack.id, `${verb}…${activity ? ` ${activity.replace(/`/g, "")}` : ""}`).catch(() => {}); // plain text: no markdown
+    else if (ack?.kind === "chat") await clickup.updateChannelMessage(config.CLICKUP_TEAM_ID, ack.id, text).catch(() => {});
     else if (ack?.kind === "comment") await clickup.updateComment(ack.id, text).catch(() => {});
   };
   const timer = ack ? setInterval(() => void (inflight = tick()), ACK_INTERVAL_MS) : undefined;
@@ -352,6 +360,7 @@ export async function postResult(taskId: string, input: TaskInput, exit: RunExit
     try {
       if (root.source.channel === "clickup-chat" && root.source.threadRef) await clickup.postChannelMessage(config.CLICKUP_TEAM_ID, root.source.threadRef, relay);
       else if (root.source.channel === "clickup" && root.source.threadRef) await clickup.postComment(root.source.threadRef, relay);
+      else if (root.source.channel === "telegram" && root.source.threadRef) await deliverTelegram(telegramClient(), root.source.threadRef, `Follow-up from ${input.roleId} (${taskId}):\n${text}`);
     } catch {
       /* best effort */
     }
@@ -366,6 +375,9 @@ export async function postResult(taskId: string, input: TaskInput, exit: RunExit
   if (input.source.channel === "clickup-chat" && input.source.threadRef) {
     if (ack?.kind === "chat") await clickup.updateChannelMessage(config.CLICKUP_TEAM_ID, ack.id, marked).catch(() => clickup.postChannelMessage(config.CLICKUP_TEAM_ID, input.source.threadRef!, marked));
     else await clickup.postChannelMessage(config.CLICKUP_TEAM_ID, input.source.threadRef, marked);
+  }
+  if (input.source.channel === "telegram" && input.source.threadRef) {
+    await deliverTelegram(telegramClient(), input.source.threadRef, text, ack?.kind === "telegram" ? ack.id : undefined);
   }
   if (input.source.channel === "slack" && input.source.threadRef) {
     const [channel, threadTs] = input.source.threadRef.split(":");

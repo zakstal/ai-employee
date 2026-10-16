@@ -10,6 +10,10 @@ import { verifyClickUpSignature } from "../clickup/verify.js";
 import { clickUpTrigger, type ClickUpWebhook } from "../clickup/webhook.js";
 import { chatTrigger, BOT_MARKER } from "../clickup/chat.js";
 import type { ClickUpClient } from "../clickup/client.js";
+import { NoopTelegramClient, type TelegramClient } from "../telegram/client.js";
+import { verifyTelegramSecret } from "../telegram/verify.js";
+import { telegramTrigger } from "../telegram/update.js";
+import { deliverTelegram } from "../telegram/send.js";
 import { backlogOverview, checkDispatchGuards } from "../backlogs/guards.js";
 import { briefFor } from "../backlogs/render.js";
 import { fill } from "../backlogs/state.js";
@@ -27,6 +31,7 @@ export interface ServerDeps {
   employees: Map<string, Employee>;
   slack: SlackClient;
   clickup: ClickUpClient;
+  telegram?: TelegramClient;
   /** Claude account usage, settings and limit handling. Built from `config` and `ledger` when omitted; tests inject one with a fake fetch. */
   claude?: ClaudeService;
 }
@@ -215,6 +220,8 @@ function recentTaskView(t: TaskRow): Record<string, unknown> {
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const { config, ledger, orchestrator, employees, slack, clickup } = deps;
+  const telegram = deps.telegram ?? new NoopTelegramClient();
+  const seenUpdates = new Set<number>(); // Telegram retries a webhook that was slow or failed; the task key dedupes too, this also covers answers to ask_human
   const claude = deps.claude ?? new ClaudeService({ config, ledger, clickup });
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 
@@ -603,6 +610,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await clickup.postChannelMessage(config.CLICKUP_TEAM_ID, root.source.threadRef, marked);
       } else if (root.source.channel === "clickup" && root.source.threadRef) {
         await clickup.postComment(root.source.threadRef, marked);
+      } else if (root.source.channel === "telegram" && root.source.threadRef) {
+        await deliverTelegram(telegram, root.source.threadRef, body.data.question);
       }
       // "http" (and any other) origin: no channel to post to, question is stored for the poller below.
     } catch (e) {
@@ -803,6 +812,41 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       roleId: employee.defaultRole,
       prompt: trigger.text,
       source: { channel: "clickup-chat", conversationId, threadRef: trigger.channelId, messageRef: trigger.messageId },
+    });
+    return reply.send({ ok: true, taskId: trigger.taskId, ...res });
+  });
+
+  // ---- Telegram bot webhook (setWebhook with secret_token + allowed_updates ["message"]; see `node dist/cli/telegram.js`)
+  app.post("/webhooks/telegram", async (req, reply) => {
+    if (!config.TELEGRAM_BOT_TOKEN) return reply.code(404).send({ error: "telegram disabled" });
+    if (!verifyTelegramSecret({ secret: config.TELEGRAM_WEBHOOK_SECRET, header: req.headers["x-telegram-bot-api-secret-token"] as string | undefined })) {
+      return reply.code(401).send({ error: "bad secret" });
+    }
+    // Always 200 from here: a non-2xx makes Telegram retry the same update.
+    const trigger = telegramTrigger(req.body, { allowedChatIds: config.TELEGRAM_ALLOWED_CHAT_IDS });
+    if ("ignored" in trigger) {
+      app.log.info({ reason: trigger.ignored }, "telegram update ignored");
+      return reply.send({ ok: true, ignored: true });
+    }
+    if (seenUpdates.has(trigger.updateId)) return reply.send({ ok: true, duplicate: true });
+    seenUpdates.add(trigger.updateId);
+    if (seenUpdates.size > 1000) seenUpdates.delete(seenUpdates.values().next().value!);
+
+    const employee = employees.get(config.TELEGRAM_EMPLOYEE_ID || config.DEFAULT_EMPLOYEE_ID);
+    if (!employee) return reply.code(500).send({ error: "telegram employee not configured" });
+
+    const awaiting = await ledger.findAwaitingInThread("telegram", trigger.chatId);
+    if (awaiting) {
+      await ledger.answerTask(awaiting.id, trigger.text);
+      return reply.send({ ok: true, routedTo: awaiting.id });
+    }
+
+    const conversationId = await ledger.upsertConversation(employee.id, "telegram", trigger.chatId);
+    const res = await orchestrator.startTask(trigger.taskId, {
+      employeeId: employee.id,
+      roleId: employee.defaultRole,
+      prompt: trigger.text,
+      source: { channel: "telegram", conversationId, threadRef: trigger.chatId, messageRef: trigger.messageId },
     });
     return reply.send({ ok: true, taskId: trigger.taskId, ...res });
   });
