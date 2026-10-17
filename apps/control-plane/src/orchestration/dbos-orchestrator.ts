@@ -1,6 +1,7 @@
 import { DBOS } from "@dbos-inc/dbos-sdk";
 import type { Orchestrator, StartResult, TaskInput, TaskStatus } from "@ai-employee/core";
 import type { Ledger } from "../db/ledger.js";
+import { retryTransient } from "../db/retry.js";
 import { deps } from "./deps.js";
 import { taskWorkflow } from "./workflow.js";
 
@@ -16,7 +17,7 @@ export class DbosOrchestrator implements Orchestrator {
   async startTask(taskId: string, input: TaskInput): Promise<StartResult> {
     const created = await this.ledger.createTask(taskId, input);
     if (!created) return { started: false, status: await this.status(taskId) };
-    await DBOS.startWorkflow(taskWorkflow, { workflowID: taskId })(taskId, input);
+    await retryTransient(() => DBOS.startWorkflow(taskWorkflow, { workflowID: taskId })(taskId, input)); // the workflowID dedupes a repeat
     return { started: true, status: "queued" };
   }
 

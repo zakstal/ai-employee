@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type pg from "pg";
+import { retryTransient } from "./retry.js";
 import type { RunHandle, RunnerEvent, TaskInput, TaskStatus } from "@ai-employee/core";
 import type { AccountUsage } from "../claude/usage.js";
 
@@ -128,12 +129,12 @@ export class Ledger {
   }
 
   async upsertConversation(employeeId: string, channel: string, externalRef: string): Promise<string> {
-    const r = await this.db.query<{ id: string }>(
+    const r = await retryTransient(() => this.db.query<{ id: string }>(
       `INSERT INTO conversations (employee_id, channel, external_ref) VALUES ($1,$2,$3)
        ON CONFLICT (channel, external_ref) DO UPDATE SET external_ref = EXCLUDED.external_ref
        RETURNING id`,
       [employeeId, channel, externalRef],
-    );
+    ));
     return r.rows[0]!.id;
   }
 
@@ -147,9 +148,13 @@ export class Ledger {
     await this.db.query("UPDATE conversations SET session_id = $2, session_role = $3 WHERE id = $1", [conversationId, sessionId, roleId]);
   }
 
-  /** Returns false if the task already existed (dedup). */
+  /**
+   * Returns false if the task already existed (dedup). Retried once on a dropped connection: the id makes the insert idempotent.
+   * ponytail: if the first attempt committed but its reply was lost, the retry reports "existed" and the workflow is not started;
+   * the task sits queued. Fix properly with a started flag on the row if it ever shows up.
+   */
   async createTask(id: string, input: TaskInput): Promise<boolean> {
-    const r = await this.db.query(
+    const r = await retryTransient(() => this.db.query(
       `INSERT INTO tasks (id, employee_id, conversation_id, role_id, prompt, source, parent_task_id, depth)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
       [
@@ -162,7 +167,7 @@ export class Ledger {
         input.source.parentTaskId ?? null,
         input.source.depth ?? 0,
       ],
-    );
+    ));
     return (r.rowCount ?? 0) > 0;
   }
 
