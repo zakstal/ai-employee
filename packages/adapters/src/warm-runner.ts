@@ -1,4 +1,4 @@
-import type { RunExit, RunHandle, RunSpec, SandboxRuntime } from "@ai-employee/core";
+import type { RunExit, RunHandle, RunSpec, RunStatus, SandboxRuntime } from "@ai-employee/core";
 
 type FetchImpl = typeof fetch;
 
@@ -17,6 +17,8 @@ interface RunResponseBody {
   status: "queued" | "running" | "exited";
   code?: number;
   reason?: string;
+  startedAt?: string;
+  endedAt?: string;
 }
 
 /**
@@ -58,6 +60,24 @@ export class WarmRunnerRuntime implements SandboxRuntime {
       }
       await sleep(interval, opts?.signal);
     }
+  }
+
+  async status(handle: RunHandle): Promise<RunStatus> {
+    const body = (await this.request("GET", `/runs/${encodeURIComponent(handle.externalId)}`, undefined, { allow404: true })) as RunResponseBody | null;
+    if (body === null) return { state: "lost" };
+    return {
+      state: body.status === "exited" ? "ended" : "running", // queued counts as not ended
+      ...(body.startedAt ? { startedAt: body.startedAt } : {}),
+      ...(body.endedAt ? { endedAt: body.endedAt } : {}),
+      ...(body.code !== undefined ? { exitCode: body.code } : {}),
+      ...(body.reason ? { reason: body.reason } : {}),
+    };
+  }
+
+  async logs(handle: RunHandle, opts: { tail: number }): Promise<string[]> {
+    const body = (await this.request("GET", `/runs/${encodeURIComponent(handle.externalId)}/logs?tail=${opts.tail}`, undefined, { allow404: true })) as { lines: string[] } | null;
+    if (body === null) throw new Error(`warm runner has no record of run ${handle.externalId}`);
+    return body.lines;
   }
 
   async cancel(handle: RunHandle): Promise<void> {

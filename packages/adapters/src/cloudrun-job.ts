@@ -1,5 +1,6 @@
 import { JobsClient, ExecutionsClient, type protos } from "@google-cloud/run";
-import type { RunExit, RunHandle, RunSpec, SandboxRuntime } from "@ai-employee/core";
+import type { RunExit, RunHandle, RunSpec, RunStatus, SandboxRuntime } from "@ai-employee/core";
+import { CloudLoggingReader, type ExecutionLogReader } from "./cloud-logging.js";
 
 type Execution = protos.google.cloud.run.v2.IExecution;
 
@@ -19,6 +20,13 @@ function grpcCode(err: unknown): number | undefined {
   return typeof err === "object" && err !== null && "code" in err
     ? (err as { code?: number }).code
     : undefined;
+}
+
+/** protobuf Timestamp (seconds may arrive as number, string or Long) to ISO. */
+function tsToIso(t: { seconds?: unknown; nanos?: number | null } | null | undefined): string | undefined {
+  if (!t || t.seconds === undefined || t.seconds === null) return undefined;
+  const ms = Number(String(t.seconds)) * 1000 + Math.floor((t.nanos ?? 0) / 1e6);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
 }
 
 function isTerminal(e: Execution): boolean {
@@ -64,6 +72,8 @@ export interface CloudRunJobRuntimeOptions {
   serviceAccountEmail?: string;
   client?: { jobs: JobsClient; executions: ExecutionsClient };
   pollIntervalMs?: number;
+  /** Where `logs()` reads from. Default: Cloud Logging with the process's application-default credentials. */
+  logReader?: ExecutionLogReader;
 }
 
 /**
@@ -81,6 +91,7 @@ export class CloudRunJobRuntime implements SandboxRuntime {
   private readonly jobsParent: string;
   private readonly jobPrefix: string;
   private readonly fixedJobName: string | undefined;
+  private readonly logReader: ExecutionLogReader;
 
   constructor(options: CloudRunJobRuntimeOptions) {
     this.jobs = options.client?.jobs ?? new JobsClient();
@@ -89,6 +100,7 @@ export class CloudRunJobRuntime implements SandboxRuntime {
     this.jobPrefix = options.jobPrefix ?? "ai-employee";
     this.fixedJobName = options.jobName;
     this.pollIntervalMs = options.pollIntervalMs ?? 3000;
+    this.logReader = options.logReader ?? new CloudLoggingReader();
   }
 
   /** `us-central1-docker.pkg.dev/p/r/runner-ops:tag` → `.../jobs/ai-employee-runner-ops`. */
@@ -163,6 +175,32 @@ export class CloudRunJobRuntime implements SandboxRuntime {
 
       await this.sleep(this.pollIntervalMs, signal);
     }
+  }
+
+  /**
+   * One look at the execution. Cloud Run does not expose the container's exit code (see terminalExit), so an ended
+   * run reports 0 (succeeded) or 1 plus the platform's `reason`.
+   */
+  async status(handle: RunHandle): Promise<RunStatus> {
+    let execution: Execution;
+    try {
+      [execution] = await this.executions.getExecution({ name: handle.externalId });
+    } catch (err) {
+      if (grpcCode(err) === GRPC_NOT_FOUND) return { state: "lost" };
+      throw err;
+    }
+    const startedAt = tsToIso(execution.startTime);
+    const base = { ...(startedAt ? { startedAt } : {}) };
+    if (!isTerminal(execution)) return { state: "running", ...base };
+    const endedAt = tsToIso(execution.completionTime);
+    const exit = (execution.succeededCount ?? 0) >= 1 ? { code: 0 } : terminalExit(execution);
+    return { state: "ended", ...base, ...(endedAt ? { endedAt } : {}), exitCode: exit.code, ...("reason" in exit && exit.reason ? { reason: exit.reason } : {}) };
+  }
+
+  async logs(handle: RunHandle, opts: { tail: number }): Promise<string[]> {
+    const m = /^projects\/([^/]+)\/locations\/[^/]+\/jobs\/([^/]+)\/executions\/([^/]+)$/.exec(handle.externalId);
+    if (!m) throw new Error(`CloudRunJobRuntime: cannot read logs for execution name ${handle.externalId}`);
+    return this.logReader.tail({ projectId: m[1]!, jobName: m[2]!, executionName: m[3]! }, opts.tail);
   }
 
   async cancel(handle: RunHandle): Promise<void> {

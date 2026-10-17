@@ -19,6 +19,7 @@
   "dependencies": {
     "@ai-employee/core": "workspace:*",
     "@google-cloud/run": "^4.1.0",
-    "@kubernetes/client-node": "^1.1.0"
+    "@kubernetes/client-node": "^1.1.0",
+    "google-auth-library": "11.0.2"
   }
 }

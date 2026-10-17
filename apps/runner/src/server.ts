@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 
 const KILL_ESCALATION_MS = 10_000;
 const DROP_AFTER_MS = 60 * 60 * 1000;
+/** Lines of child output kept per run for GET /runs/:id/logs (operators read the tail of a live or just-ended run). */
+const LOG_LINES_KEPT = 1000;
 
 type RunStatus = "queued" | "running" | "exited";
 
@@ -31,6 +33,7 @@ interface RunRecord {
   child?: ChildProcess;
   workspaceDir?: string;
   keepWorkspace?: boolean;
+  logs: string[];
   killReason?: "timeout" | "cancelled";
   timeoutTimer?: ReturnType<typeof setTimeout>;
   killEscalationTimer?: ReturnType<typeof setTimeout>;
@@ -89,10 +92,12 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
-function pipeLines(stream: NodeJS.ReadableStream | null, runId: string): void {
+function pipeLines(stream: NodeJS.ReadableStream | null, record: RunRecord): void {
   if (!stream) return;
   createInterface({ input: stream }).on("line", (line) => {
-    process.stderr.write(`[run ${runId}] ${line}\n`);
+    process.stderr.write(`[run ${record.runId}] ${line}\n`);
+    record.logs.push(line);
+    if (record.logs.length > LOG_LINES_KEPT) record.logs.shift();
   });
 }
 
@@ -159,8 +164,8 @@ export function createServer(opts: ServerOptions): ServerHandle {
     const child = spawn(cmd!, args, { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
     record.child = child;
 
-    pipeLines(child.stdout, record.runId);
-    pipeLines(child.stderr, record.runId);
+    pipeLines(child.stdout, record);
+    pipeLines(child.stderr, record);
 
     record.timeoutTimer = setTimeout(() => killWithEscalation(record, "timeout"), record.timeoutSec * 1000);
     record.timeoutTimer.unref();
@@ -225,6 +230,7 @@ export function createServer(opts: ServerOptions): ServerHandle {
     const record: RunRecord = {
       runId: body.runId,
       status: "queued",
+      logs: [],
       env: body.env as Record<string, string>,
       timeoutSec: body.timeoutSec,
       command: Array.isArray(body.command) ? (body.command as string[]) : undefined,
@@ -251,6 +257,16 @@ export function createServer(opts: ServerOptions): ServerHandle {
       return;
     }
     sendJson(res, 200, toResponse(record));
+  }
+
+  function handleLogs(runId: string, url: URL, res: http.ServerResponse): void {
+    const record = runs.get(runId);
+    if (!record) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    const tail = Math.min(Math.max(Math.trunc(Number(url.searchParams.get("tail") ?? 100)) || 100, 1), LOG_LINES_KEPT);
+    sendJson(res, 200, { runId, lines: record.logs.slice(-tail) });
   }
 
   function handleCancel(runId: string, res: http.ServerResponse): void {
@@ -291,6 +307,8 @@ export function createServer(opts: ServerOptions): ServerHandle {
       handleListRuns(res);
       return;
     }
+    const logs = /^\/runs\/([^/]+)\/logs$/.exec(url.pathname);
+    if (logs && req.method === "GET") return handleLogs(decodeURIComponent(logs[1]!), url, res);
     const m = /^\/runs\/([^/]+)$/.exec(url.pathname);
     if (m) {
       const runId = decodeURIComponent(m[1]!);
