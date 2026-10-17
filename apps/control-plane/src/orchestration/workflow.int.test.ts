@@ -23,6 +23,7 @@ import { resetTestDatabases, TEST_DB_URL, TEST_DBOS_URL } from "../test-support.
 import { EnvSecretStore } from "../credentials/index.js";
 import { deps, setWorkflowDeps } from "./deps.js";
 import { buildRunSpec, finalize, postResult } from "./steps.js";
+import { sweepWithDeps } from "./sweep.js";
 import { DbosOrchestrator } from "./dbos-orchestrator.js";
 
 const employee: Employee = {
@@ -406,6 +407,25 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       await finalize("child-session:1", { code: 0 }, { runId: "child-session:1", seq: 2, ts: "2026-01-01T00:00:01Z", type: "result", text: "ok", isError: false, numTurns: 1 });
       expect(await ledger.getConversationSession(conv, "assistant")).toBe("sess-chat");
     });
+
+    it("the sandbox sweep closes a ghost task (sandbox ended long ago, workflow gone) against the real ledger, and delivers to its chat", async () => {
+      const taskId = "ghost:1";
+      const input = { employeeId: "dev", roleId: "assistant", prompt: "supervise", source: { channel: "telegram", threadRef: "7002", quiet: true } } as never;
+      await ledger.createTask(taskId, input);
+      await ledger.setStatus(taskId, "running", { runHandle: { adapter: "ghostrt", externalId: "gone-1" } });
+      deps().runtimes.ghostrt = {
+        name: "ghostrt", start: vi.fn(), wait: vi.fn(), cancel: async () => {},
+        status: async () => ({ state: "ended" as const, endedAt: new Date(Date.now() - 30 * 60_000).toISOString(), exitCode: 0 }),
+      };
+      const before = telegram.messages.length;
+      expect(await sweepWithDeps()).toContain(taskId);
+      const t = (await ledger.getTask(taskId))!;
+      expect(t.status).toBe("failed");
+      expect(t.result).toMatchObject({ exit: { code: 0 } });
+      expect(telegram.messages.slice(before).some((m) => m.chatId === "7002" && m.text.includes("ended without a result"))).toBe(true);
+      expect(await sweepWithDeps()).not.toContain(taskId); // done once
+      delete deps().runtimes.ghostrt;
+    }, 20_000);
 
     it("POST /tasks with replyTo telegram runs the task and sends only the final result to the owner chat (no placeholder)", async () => {
       const a = tgApp();

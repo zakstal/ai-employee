@@ -84,6 +84,8 @@ const Env = z.object({
   LOCAL_RUNNER_CMD: z.string().default("node ../runner/dist/index.js"),
   /** ClickUp chat channel id for failure alerts and the daily digest. Unset = both disabled. */
   ALERT_CHANNEL_ID: z.string().default(""),
+  /** A task whose sandbox ended this many minutes ago with no final result recorded is closed by the sweep (failed, or done/cancelled if a result did arrive). Must stay above the runner's ~5 min report retry. 0 disables. */
+  SANDBOX_SWEEP_GRACE_MIN: z.coerce.number().int().nonnegative().default(10),
   /** Role woken when backlog work finishes. Empty disables the manager entirely. */
   MANAGER_ROLE: z.string().default(""),
   /** Minimum seconds between manager runs, so a burst of completions is one wake. */
