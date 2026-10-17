@@ -104,4 +104,32 @@ describe("WarmRunnerRuntime", () => {
     await expect(rt.start(spec)).rejects.toThrow(/HTTP 500/);
     expect(fetchImpl).toHaveBeenCalledTimes(6);
   }, 15_000);
+
+  it("status maps the runner's record: running (queued too), ended with code/times, and lost on 404", async () => {
+    const handle = { adapter: "warm", externalId: "run-1" };
+    const bodies: Record<string, unknown> = {
+      queued: { runId: "run-1", status: "queued" },
+      running: { runId: "run-1", status: "running", startedAt: "2026-01-01T00:00:00.000Z" },
+      exited: { runId: "run-1", status: "exited", code: 137, reason: "timeout", startedAt: "2026-01-01T00:00:00.000Z", endedAt: "2026-01-01T00:05:00.000Z" },
+    };
+    let next = "queued";
+    const fetchImpl = vi.fn(async () => (next === "gone" ? jsonResponse(404, { error: "not found" }) : jsonResponse(200, bodies[next])));
+    const rt = new WarmRunnerRuntime({ baseUrl: "http://box:8080", token: "tok", fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(await rt.status(handle)).toEqual({ state: "running" });
+    next = "running";
+    expect(await rt.status(handle)).toEqual({ state: "running", startedAt: "2026-01-01T00:00:00.000Z" });
+    next = "exited";
+    expect(await rt.status(handle)).toEqual({ state: "ended", startedAt: "2026-01-01T00:00:00.000Z", endedAt: "2026-01-01T00:05:00.000Z", exitCode: 137, reason: "timeout" });
+    next = "gone";
+    expect(await rt.status(handle)).toEqual({ state: "lost" });
+  });
+
+  it("logs GETs /runs/:id/logs?tail=N", async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      expect(String(url)).toBe("http://box:8080/runs/run-1/logs?tail=3");
+      return jsonResponse(200, { runId: "run-1", lines: ["a", "b", "c"] });
+    });
+    const rt = new WarmRunnerRuntime({ baseUrl: "http://box:8080", token: "tok", fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(await rt.logs({ adapter: "warm", externalId: "run-1" }, { tail: 3 })).toEqual(["a", "b", "c"]);
+  });
 });

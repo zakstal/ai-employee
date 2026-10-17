@@ -666,6 +666,91 @@ server.registerTool(
   },
 );
 
+interface SandboxInfo {
+  adapter: string | null;
+  externalId: string | null;
+  state: string;
+  startedAt?: string;
+  endedAt?: string;
+  exitCode?: number;
+  reason?: string;
+  error?: string;
+}
+
+server.registerTool(
+  "task_runtime",
+  {
+    description:
+      "Operator tool (needs `operate`). The sandbox of ANY task of this employee as the platform reports it, not as the ledger believes: " +
+      "adapter, Cloud Run execution name or warm run id, running / ended / lost, start and end times, exit code. Use it when a task looks " +
+      "stuck or finished without saying so: a task marked running whose sandbox has ended is a ghost.",
+    inputSchema: { task_id: z.string().min(1) },
+  },
+  async ({ task_id }): Promise<CallToolResult> => {
+    try {
+      const b = (await request("GET", `/operator/tasks/${encodeURIComponent(task_id)}/runtime`)) as { role: string; status: string; sandbox: SandboxInfo };
+      const s = b.sandbox;
+      const lines = [`Task ${task_id} (${b.role}) is ${b.status} in the ledger.`];
+      if (s.state === "not_started") lines.push("sandbox: not started yet (no run handle).");
+      else {
+        lines.push(`sandbox: ${s.adapter} ${s.externalId} is ${s.state.toUpperCase()}`);
+        if (s.startedAt) lines.push(`started: ${s.startedAt}`);
+        if (s.endedAt) lines.push(`ended: ${s.endedAt}`);
+        if (s.exitCode !== undefined) lines.push(`exit code: ${s.exitCode}${s.reason ? ` (${s.reason})` : ""}`);
+        else if (s.reason) lines.push(`reason: ${s.reason}`);
+        if (s.error) lines.push(`could not tell: ${s.error}`);
+      }
+      return textResult(lines.join("\n"));
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+const MAX_LOG_LINE_CHARS = 1000;
+
+server.registerTool(
+  "task_logs",
+  {
+    description:
+      "Operator tool (needs `operate`). The last `tail` lines (default 100, max 500) of the sandbox's own log for ANY task of this employee " +
+      "(Cloud Run: Cloud Logging for the execution; warm runner: the run's output). Raw process output, below the level of task_events: " +
+      "use it to see why a run crashed or hung. Adapters that cannot read logs say so.",
+    inputSchema: { task_id: z.string().min(1), tail: z.number().int().min(1).max(500).optional() },
+  },
+  async ({ task_id, tail }): Promise<CallToolResult> => {
+    try {
+      const qs = new URLSearchParams({ tail: String(tail ?? 100) });
+      const b = (await request("GET", `/operator/tasks/${encodeURIComponent(task_id)}/logs?${qs}`)) as { adapter: string; externalId: string; lines: string[] };
+      if (b.lines.length === 0) return textResult(`No log lines for task ${task_id} (${b.adapter} ${b.externalId}).`);
+      const clipped = b.lines.map((l) => (l.length > MAX_LOG_LINE_CHARS ? `${l.slice(0, MAX_LOG_LINE_CHARS)}…` : l));
+      return textResult([`Last ${clipped.length} log lines of task ${task_id} (${b.adapter} ${b.externalId}):`, ...clipped].join("\n"));
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
+server.registerTool(
+  "note_for_owner_session",
+  {
+    description:
+      "Leave a note for the owner's LOCAL Claude Code session (the one they run on their own machine). Use it to hand over something " +
+      "that session should pick up: a command to run locally, a decision, a finding, a file to look at. Stored only: nothing is sent to any " +
+      "chat, and the local session reads it when it next polls. Self-contained text; at most 50 notes per task. For something the owner " +
+      "must see now, use message_owner instead.",
+    inputSchema: { text: z.string().min(1).max(20000) },
+  },
+  async ({ text }): Promise<CallToolResult> => {
+    try {
+      const r = (await request("POST", "/agents/self/owner-note", { text })) as { id: number };
+      return textResult(`Noted for the owner's local session (note ${r.id}). Nothing was sent to a chat.`);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
+);
+
 server.registerTool(
   "claude_settings",
   {

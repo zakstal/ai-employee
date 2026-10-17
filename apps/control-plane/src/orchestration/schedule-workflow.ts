@@ -3,6 +3,7 @@ import { listDue, markFired, taskFor } from "../schedules/tick.js";
 import * as manager from "../manager/tick.js";
 import * as monitors from "../monitors/tick.js";
 import { deps } from "./deps.js";
+import { sweepWithDeps } from "./sweep.js";
 import { taskWorkflow } from "./workflow.js";
 
 /**
@@ -43,6 +44,8 @@ async function scheduleTickBody(scheduledTime: Date): Promise<void> {
     await DBOS.runStep(() => deps().ledger.createTask(wake.taskId, wake.input), { name: "createManagerTask" });
     await DBOS.startWorkflow(taskWorkflow, { workflowID: wake.taskId })(wake.taskId, wake.input);
   }
+  // Tasks whose sandbox ended with nobody left to record it (a deploy mid-run): close them rather than leave them "running".
+  await DBOS.runStep(() => sweepWithDeps(), { name: "sweepEndedSandboxes", retriesAllowed: false });
 }
 
 DBOS.registerScheduled(DBOS.registerWorkflow(scheduleTickBody, { name: "scheduleTick" }), { crontab: "* * * * *" });

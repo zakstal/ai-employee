@@ -28,7 +28,8 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
   // One Claude Code session per conversation: the runner keeps a stable workspace + `--resume`s the
   // last session, so the model has real state (tool results included) instead of a pasted transcript.
   const conversationId = input.source.conversationId;
-  const sessionId = conversationId ? await ledger.getConversationSession(conversationId) : null;
+  // Only the role that created the session resumes it: another role's system prompt and tools are baked into it.
+  const sessionId = conversationId ? await ledger.getConversationSession(conversationId, role.id) : null;
   const env: Record<string, string> = {
     TASK_ID: taskId,
     GIT_AUTHOR_NAME: employee.name,
@@ -145,8 +146,8 @@ export function environmentFooter(role: Role, employee?: Employee, managerRole?:
   if (bash.some((b) => b.startsWith("Bash(psql") || b.startsWith("Bash(pg-scratch"))) {
     lines.push('- Postgres: `eval "$(pg-scratch)"` starts a throwaway server in your workspace and exports DATABASE_URL. Use it for anything needing a real database; it dies with this run.');
   }
-  lines.push("- Visibility (every role): `employee_status` shows everything running now (any source), the last 24 h of finished tasks and Claude account usage; `list_tasks` lists recent tasks; `message_owner` sends the owner a message on their own channel (Telegram when configured).");
-  if (role.capabilities.includes("operate")) lines.push("- Operating: `start_task` (top-level task; reply_to \"telegram\" delivers the result to the owner), `cancel_task`, `task_events` (any task of this employee), `claude_settings` (get/set limitPolicy, allowOverage, warnAt, preferred). Changing settings changes spend: do it only when the owner asks.");
+  lines.push("- Visibility (every role): `employee_status` shows everything running now (any source), the last 24 h of finished tasks and Claude account usage; `list_tasks` lists recent tasks; `message_owner` sends the owner a message on their own channel (Telegram when configured); `note_for_owner_session` leaves a note for the owner's local Claude Code session (stored only, not sent to a chat).");
+  if (role.capabilities.includes("operate")) lines.push("- Operating: `start_task` (top-level task; reply_to \"telegram\" delivers the result to the owner), `cancel_task`, `task_events` (any task of this employee), `task_runtime` (its sandbox: running/ended, exit code) and `task_logs` (the sandbox's log tail), `claude_settings` (get/set limitPolicy, allowOverage, warnAt, preferred). Changing settings changes spend: do it only when the owner asks.");
   if (role.capabilities.includes("monitors")) lines.push("- Monitors (background sweeps, default OFF): `list_monitors`, `enable_monitor`, `disable_monitor`. Turn one on/off when the user asks.");
   if (bash.length) lines.push(`- Shell commands allowed: ${bash.map((b) => b.slice(5, -1)).join(", ")}. Anything else via Bash is denied.`);
   lines.push("- If you are unsure whether something works, run it once and report the actual result. Never claim a tool is unavailable without trying.");
@@ -425,10 +426,11 @@ export async function finalize(taskId: string, exit: RunExit, result: ResultEven
   if (input && shouldWake(input)) await requestWake(input.employeeId, taskId, ok ? "done" : "failed");
   // Remember the session this run used (or created) so the conversation's next message resumes it.
   const task = await ledger.getTask(taskId);
-  if (task?.conversation_id) {
+  // A child agent shares its parent's conversation but is one-shot: its session must not displace the chat's own.
+  if (task?.conversation_id && task.source.channel !== "child") {
     // Last, not first: a run that recovered from a usage limit starts a second turn on the session.
     const started = (await ledger.listEvents(taskId)).filter((e): e is StartedEvent => e.type === "started" && !!e.sessionId).pop();
-    if (started?.sessionId) await ledger.setConversationSession(task.conversation_id, started.sessionId);
+    if (started?.sessionId) await ledger.setConversationSession(task.conversation_id, started.sessionId, task.role_id);
   }
   // Ended on a usage-limit message (policy off, recoveries used up, wait too long): mark that account out for the next picks.
   if (!ok && result && LIMIT_RE.test(result.text)) {

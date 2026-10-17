@@ -195,6 +195,18 @@ describe("runner server", () => {
     expect(res.status).toBe(401);
   });
 
+  it("GET /runs/:id/logs returns the tail of the run's output, oldest first, and needs the token", async () => {
+    const { baseUrl } = await start();
+    await post(baseUrl, { runId: "run-logs", env: {}, timeoutSec: 30, command: ["sh", "-c", "for i in 1 2 3 4 5; do echo line$i; done; echo oops >&2"] });
+    await waitFor(() => get(baseUrl, "run-logs").then((r) => r.json() as Promise<RunBody>), (b) => b.status === "exited");
+    const logs = (tail: number) => fetch(`${baseUrl}/runs/run-logs/logs?tail=${tail}`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    await waitFor(async () => ((await (await logs(100)).json()) as { lines: string[] }).lines, (l) => l.length === 6);
+    expect(((await (await logs(100)).json()) as { lines: string[] }).lines.sort()).toEqual(["line1", "line2", "line3", "line4", "line5", "oops"]);
+    expect(((await (await logs(2)).json()) as { lines: string[] }).lines).toHaveLength(2);
+    expect((await fetch(`${baseUrl}/runs/nope/logs`, { headers: { authorization: `Bearer ${TOKEN}` } })).status).toBe(404);
+    expect((await fetch(`${baseUrl}/runs/run-logs/logs`, { headers: { authorization: "Bearer wrong" } })).status).toBe(401);
+  });
+
   it("reports health without auth", async () => {
     const { baseUrl } = await start({ maxConcurrency: 2 });
     const res = await fetch(`${baseUrl}/health`);

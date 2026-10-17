@@ -22,7 +22,8 @@ import { fireDueSchedules } from "../schedules/tick.js";
 import { resetTestDatabases, TEST_DB_URL, TEST_DBOS_URL } from "../test-support.js";
 import { EnvSecretStore } from "../credentials/index.js";
 import { deps, setWorkflowDeps } from "./deps.js";
-import { buildRunSpec, postResult } from "./steps.js";
+import { buildRunSpec, finalize, postResult } from "./steps.js";
+import { sweepWithDeps } from "./sweep.js";
 import { DbosOrchestrator } from "./dbos-orchestrator.js";
 
 const employee: Employee = {
@@ -281,7 +282,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
     // first message of a conversation: fresh session, stable per-conversation workspace, session id recorded
     expect(text).toContain("resume=none ws=conv-");
     const convId = t.conversation_id!;
-    expect(await ledger.getConversationSession(convId)).toBe("sess-clickup-chat:ch1:m3");
+    expect(await ledger.getConversationSession(convId, employee.defaultRole)).toBe("sess-clickup-chat:ch1:m3");
 
     // next message in the same channel resumes that session and skips the transcript paste
     const res2 = await chatApp.inject({ method: "POST", url: "/clickup/chat", payload: { id: "m5", channel_id: "ch1", content: "and now?" }, headers: { "x-bot-secret": "s3" } });
@@ -292,7 +293,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
     expect(text2).toContain(`ws=conv-${convId}`);
     expect(text2).not.toContain("Conversation so far");
     expect(text2).toContain("echo: and now?");
-    expect(await ledger.getConversationSession(convId)).toBe("sess-clickup-chat:ch1:m5");
+    expect(await ledger.getConversationSession(convId, employee.defaultRole)).toBe("sess-clickup-chat:ch1:m5");
     await chatApp.close();
   }, 45_000);
 
@@ -347,7 +348,7 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       expect(mine[0]!.text).toContain("echo: remember 42");
 
       const convId = t.conversation_id!;
-      expect(await ledger.getConversationSession(convId)).toBe("sess-telegram:10");
+      expect(await ledger.getConversationSession(convId, employee.defaultRole)).toBe("sess-telegram:10");
       await post(11, "and now?");
       const t2 = await waitFor("telegram:11", ["done"]);
       expect(t2.conversation_id).toBe(convId);
@@ -371,6 +372,60 @@ describe("task workflow end-to-end (DBOS + local runtime)", () => {
       expect(await ledger.getTask("telegram:31")).toBeUndefined();
       await bad.close();
     }, 45_000);
+
+    it("a message handled by a different role than the one that created the session starts fresh (every chat channel), and records the new role", async () => {
+      for (const channel of ["telegram", "clickup-chat", "slack"]) {
+        const conv = await ledger.upsertConversation("dev", channel, `role-switch-${channel}`);
+        const specFor = async (roleId: string, n: number) => {
+          const taskId = `role-switch:${channel}:${n}`;
+          const input = { employeeId: "dev", roleId, prompt: "hi", source: { channel, conversationId: conv, threadRef: "x" } } as never;
+          await ledger.createTask(taskId, input);
+          return (await buildRunSpec(taskId, input)).env.RESUME_SESSION_ID;
+        };
+        expect(await specFor("assistant", 1), "no session yet").toBeUndefined();
+        await ledger.setConversationSession(conv, "sess-assistant", "assistant");
+        expect(await specFor("assistant", 2), "same role resumes").toBe("sess-assistant");
+        expect(await specFor("ops", 3), "other role starts fresh").toBeUndefined();
+        await ledger.setConversationSession(conv, "sess-ops", "ops");
+        expect(await specFor("ops", 4)).toBe("sess-ops");
+        expect(await specFor("assistant", 5), "and back again: fresh, the slot now belongs to ops").toBeUndefined();
+      }
+    });
+
+    it("a stored session with no recorded role (pre-migration row) is not resumed", async () => {
+      const conv = await ledger.upsertConversation("dev", "telegram", "legacy-session");
+      await pool.query("UPDATE conversations SET session_id = 'sess-legacy', session_role = NULL WHERE id = $1", [conv]);
+      expect(await ledger.getConversationSession(conv, "assistant")).toBeNull();
+    });
+
+    it("a child agent's session does not replace the conversation's session", async () => {
+      const conv = await ledger.upsertConversation("dev", "telegram", "child-session");
+      await ledger.setConversationSession(conv, "sess-chat", "assistant");
+      const input = { employeeId: "dev", roleId: "ops", prompt: "child", source: { channel: "child", conversationId: conv, depth: 1 } } as never;
+      await ledger.createTask("child-session:1", input);
+      await ledger.appendEvent({ runId: "child-session:1", seq: 1, ts: "2026-01-01T00:00:00Z", type: "started", harness: "fake", sessionId: "sess-child" });
+      await finalize("child-session:1", { code: 0 }, { runId: "child-session:1", seq: 2, ts: "2026-01-01T00:00:01Z", type: "result", text: "ok", isError: false, numTurns: 1 });
+      expect(await ledger.getConversationSession(conv, "assistant")).toBe("sess-chat");
+    });
+
+    it("the sandbox sweep closes a ghost task (sandbox ended long ago, workflow gone) against the real ledger, and delivers to its chat", async () => {
+      const taskId = "ghost:1";
+      const input = { employeeId: "dev", roleId: "assistant", prompt: "supervise", source: { channel: "telegram", threadRef: "7002", quiet: true } } as never;
+      await ledger.createTask(taskId, input);
+      await ledger.setStatus(taskId, "running", { runHandle: { adapter: "ghostrt", externalId: "gone-1" } });
+      deps().runtimes.ghostrt = {
+        name: "ghostrt", start: vi.fn(), wait: vi.fn(), cancel: async () => {},
+        status: async () => ({ state: "ended" as const, endedAt: new Date(Date.now() - 30 * 60_000).toISOString(), exitCode: 0 }),
+      };
+      const before = telegram.messages.length;
+      expect(await sweepWithDeps()).toContain(taskId);
+      const t = (await ledger.getTask(taskId))!;
+      expect(t.status).toBe("failed");
+      expect(t.result).toMatchObject({ exit: { code: 0 } });
+      expect(telegram.messages.slice(before).some((m) => m.chatId === "7002" && m.text.includes("ended without a result"))).toBe(true);
+      expect(await sweepWithDeps()).not.toContain(taskId); // done once
+      delete deps().runtimes.ghostrt;
+    }, 20_000);
 
     it("POST /tasks with replyTo telegram runs the task and sends only the final result to the owner chat (no placeholder)", async () => {
       const a = tgApp();

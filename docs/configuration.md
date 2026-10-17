@@ -112,7 +112,7 @@ The result goes to Claude Code as `--append-system-prompt`, so Claude Code's own
 
 The task prompt (what the user asked) is separate. For a ClickUp comment it is prefixed with the task's name, URL, status and
 description. For a ClickUp chat message it is prefixed with the last `CLICKUP_CHAT_HISTORY` messages of the channel (default 20),
-unless an earlier Claude Code session for the conversation is resumed. Other channels send the text as is.
+unless an earlier Claude Code session for the conversation is resumed (only a session created by the same role is resumed; a message handled by another role starts a fresh one). Other channels send the text as is.
 
 Prompt files live under the roles directory (the example uses `roles/prompts/*.md`). The repo ships these for `dev.yaml`:
 
@@ -143,8 +143,8 @@ lists all its tools to every role; the control plane decides on each call. Three
 | `schedules` | `create_schedule`, `list_schedules`, `delete_schedule` | creating needs `schedules`; target role must be the caller or in `canSchedule` |
 | `monitors` | `list_monitors`, `enable_monitor`, `disable_monitor` | all three need `monitors` |
 | `backlog` | manager backlog dispatch (`spawn_agent` with `backlog` / `item`) | needs `agents`; the manager role only |
-| `operate` | `start_task`, `cancel_task`, `task_events`, `claude_settings` | all four need `operate`; they act on any task of the employee. See the README section "Operating the employee from chat" |
-| (none) | `employee_status`, `list_tasks`, `message_owner` | any role; `message_owner` is rate-limited to 20 per hour per task |
+| `operate` | `start_task`, `cancel_task`, `task_events`, `task_runtime`, `task_logs`, `claude_settings` | all six need `operate`; they act on any task of the employee. See the README section "Operating the employee from chat" |
+| (none) | `employee_status`, `list_tasks`, `message_owner`, `note_for_owner_session` | any role; `message_owner` is rate-limited to 20 per hour per task, `note_for_owner_session` to 50 notes per task |
 
 `ask_human(question)` posts the question to the ClickUp task or chat channel the work started in and pauses the task until someone replies
 there. It only works on the server, so **a role that never gets the `ai_employee` server cannot call it**. In `dev.yaml` the stage roles
@@ -477,4 +477,4 @@ manifest does that; on the VM you would add a volume to `infra/gcp-vm/startup.sh
 restart the control plane to re-read it, and `systemPromptFile` paths must stay inside the mounted directory.
 
 Restarting the control plane while tasks run is designed to be safe: DBOS resumes pending workflows at boot and the warm runner keeps its processes. On the VM, recreating the **runner**
-container kills the runs inside it, so roll the runner only when nothing is running (`GET /runtime` lists active runs).
+container kills the runs inside it, so roll the runner only when nothing is running (`GET /runtime` lists active runs). A runner that outlives a control-plane restart keeps retrying its event and result posts for up to 5 minutes, and a task whose sandbox ended with no one left to record it is closed by the sweep after `SANDBOX_SWEEP_GRACE_MIN` minutes (README, "Robustness").

@@ -235,9 +235,10 @@ running?", "stop the review task", "start an ops task to check the Azure errors 
 
 | Tool | What it returns |
 |---|---|
-| `employee_status` | Every running, queued or waiting task of the employee from any source (http, ClickUp, ClickUp chat, Slack, Telegram, schedules, subagents): id, role, source channel, parent and root task, age, Claude account, cost so far, and the latest progress line (the last thing the agent said). Then the last 24 hours of finished tasks (status, one-line result), then every Claude account's 5h/7d utilization, reset time and availability, and the current settings. Backed by `GET /agents/self/status`. |
+| `employee_status` | Every running, queued or waiting task of the employee from any source (http, ClickUp, ClickUp chat, Slack, Telegram, schedules, subagents): id, role, source channel, parent and root task, age, Claude account, cost so far, and the latest progress line (the last thing the agent said), and whether its sandbox is still running or has ended (`[sandbox ENDED 12m ago]` on a task still marked running is a ghost). Then the last 24 hours of finished tasks (status, one-line result), then every Claude account's 5h/7d utilization, reset time and availability, and the current settings. Backed by `GET /agents/self/status`. |
 | `list_tasks` | Recent tasks of the employee, any status. No longer needs the `backlog` capability. |
 | `message_owner` | See [Messaging the owner](#messaging-the-owner). |
+| `note_for_owner_session` | See [Notes for your local Claude Code session](#notes-for-your-local-claude-code-session). |
 
 Cost so far is only known once a task has finished: Claude Code reports cost in its final result, so a running task shows `-`.
 
@@ -248,6 +249,8 @@ Cost so far is only known once a task has finished: Claude Code reports cost in 
 | `start_task(role, prompt, task_key?, reply_to?)` | Starts a top-level task, as if `POST /tasks`. `reply_to: "telegram"` sends its final result to the owner's chat. `task_key` makes the call idempotent. | `POST /operator/tasks` |
 | `cancel_task(task_id)` | Cancels any task of the employee, not only the caller's children. Finished tasks are left alone; a task cannot cancel itself. | `POST /operator/tasks/:id/cancel` |
 | `task_events(task_id, since?, limit?)` | The event stream (text, tool calls, results) of any task of the employee. | `GET /operator/tasks/:id/events` |
+| `task_runtime(task_id)` | The task's sandbox as the platform reports it, not as the ledger believes: adapter, Cloud Run execution name or warm run id, running / ended / lost, start and end times, exit code. For a task that looks stuck, or finished without saying so. | `GET /operator/tasks/:id/runtime` |
+| `task_logs(task_id, tail?)` | The last `tail` (default 100, max 500) lines of the sandbox's own log. Cloud Run: Cloud Logging, queried by execution name with the control plane's own Google credentials (needs `roles/logging.viewer` on the project, added to the Terraform in `infra/gcp-vm` and `infra/gcp-cloudrun`, so run `terraform apply` once; **no new env var**). Warm runner: the last 1000 lines of the run's output, kept in the runner's memory. Other adapters (`k8s`, `local`) answer 501 and the tool says so. | `GET /operator/tasks/:id/logs?tail=` |
 | `claude_settings(action, limitPolicy?, allowOverage?, warnAt?, preferred?)` | `get` reads, `set` changes only the fields given, with the same validation as `PUT /settings/claude`. Takes effect on the next decision. | `GET`/`PUT /operator/settings/claude` |
 
 These routes are authenticated with the run token like the other `/agents/self/*` routes, and a role without `operate` gets
@@ -275,6 +278,41 @@ in memory and resets on restart.
 Alerts use the same owner chat. Failure alerts, Claude usage warnings, backlog guard alerts, the daily digest and monitor/manager
 reports go to ClickUp as before; set `ALERT_TELEGRAM=1` to send them to the owner's Telegram chat as well (with the flag and no
 `ALERT_CHANNEL_ID`, Telegram alone gets them).
+
+### Notes for your local Claude Code session
+
+When you also work in a Claude Code session on your own machine, the employee can hand things to it. Any role can call
+`note_for_owner_session(text)` (`POST /agents/self/owner-note`, run-token auth): the note is **only stored** (table `owner_notes`) and
+nothing is sent to Telegram or ClickUp. At most 50 notes per task. Your local session reads and clears them through two admin routes,
+authenticated like `/usage` (`Authorization: Bearer <ADMIN_TOKEN>` when `ADMIN_TOKEN` is set, open otherwise):
+
+- `GET /notes?since=<id>` returns notes with an id above `since`, oldest first, that are not yet acknowledged (`all=1` includes
+  acknowledged ones; `employee=<id>` and `limit=` narrow it). Each has `id`, `employee`, `task`, `role`, `text`, `createdAt`, `ackedAt`.
+- `POST /notes/:id/ack` marks one as handled (idempotent).
+
+```sh
+curl -s -H "authorization: Bearer $ADMIN_TOKEN" "$CP/notes"            # poll
+curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" "$CP/notes/12/ack"
+```
+
+## Robustness
+
+- **Role changes start a fresh chat session.** A conversation (Telegram, ClickUp chat, Slack, ClickUp comments) resumes one Claude
+  session per role: the session id is stored with the role that created it (`conversations.session_role`), and a message handled by a
+  different role starts a new session instead of resuming one that carries the other role's system prompt and tools. The conversation
+  holds one session at a time, so switching back also starts fresh. Sessions stored before this change have no recorded role and are not
+  resumed once. A child agent never replaces its conversation's session.
+- **Task creation survives a dropped database connection.** The `tasks` insert (idempotent on its id) and the conversation upsert are
+  retried once on a transient error (`ECONNRESET`, `Connection terminated`, SQLSTATE 08xxx/57P01, the Cloud SQL proxy's dial timeout).
+  The pg pool also keeps sockets alive, expires idle clients after 30 s, and logs an idle-client error instead of crashing on it.
+- **Runners retry their reports.** Event, `result` and `exit` posts to `POST /runs/:id/events` are retried with backoff (250 ms doubling
+  to 15 s) on connection errors, 429 and 5xx (including 502 to 504 while the control plane restarts) for up to 5 minutes per batch, in
+  order. Other 4xx responses drop the batch. The queue is in memory: a runner that is killed mid-outage loses what it had not sent.
+- **Ghost task sweep.** Every minute (on the control plane that owns the tick) a task still `running` or `awaiting_input` is checked against its
+  sandbox. If the adapter says the sandbox ended (or was lost) more than `SANDBOX_SWEEP_GRACE_MIN` minutes ago (default 10, above the
+  runner's 5-minute retry; 0 disables) the task is closed: if the runner got a result through it is delivered and recorded, otherwise the task
+  fails with "ended without a result" (and a failure alert, for the channels that get them). Needs the adapter to implement `status()`: Cloud
+  Run and the warm runner do; `k8s` and `local` do not, so their tasks are never swept.
 
 ## Deploy
 
