@@ -28,7 +28,8 @@ export async function buildRunSpec(taskId: string, input: TaskInput): Promise<Ru
   // One Claude Code session per conversation: the runner keeps a stable workspace + `--resume`s the
   // last session, so the model has real state (tool results included) instead of a pasted transcript.
   const conversationId = input.source.conversationId;
-  const sessionId = conversationId ? await ledger.getConversationSession(conversationId) : null;
+  // Only the role that created the session resumes it: another role's system prompt and tools are baked into it.
+  const sessionId = conversationId ? await ledger.getConversationSession(conversationId, role.id) : null;
   const env: Record<string, string> = {
     TASK_ID: taskId,
     GIT_AUTHOR_NAME: employee.name,
@@ -425,10 +426,11 @@ export async function finalize(taskId: string, exit: RunExit, result: ResultEven
   if (input && shouldWake(input)) await requestWake(input.employeeId, taskId, ok ? "done" : "failed");
   // Remember the session this run used (or created) so the conversation's next message resumes it.
   const task = await ledger.getTask(taskId);
-  if (task?.conversation_id) {
+  // A child agent shares its parent's conversation but is one-shot: its session must not displace the chat's own.
+  if (task?.conversation_id && task.source.channel !== "child") {
     // Last, not first: a run that recovered from a usage limit starts a second turn on the session.
     const started = (await ledger.listEvents(taskId)).filter((e): e is StartedEvent => e.type === "started" && !!e.sessionId).pop();
-    if (started?.sessionId) await ledger.setConversationSession(task.conversation_id, started.sessionId);
+    if (started?.sessionId) await ledger.setConversationSession(task.conversation_id, started.sessionId, task.role_id);
   }
   // Ended on a usage-limit message (policy off, recoveries used up, wait too long): mark that account out for the next picks.
   if (!ok && result && LIMIT_RE.test(result.text)) {

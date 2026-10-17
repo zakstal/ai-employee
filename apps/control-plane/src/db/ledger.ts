@@ -137,13 +137,14 @@ export class Ledger {
     return r.rows[0]!.id;
   }
 
-  async getConversationSession(conversationId: string): Promise<string | null> {
-    const r = await this.db.query<{ session_id: string | null }>("SELECT session_id FROM conversations WHERE id = $1", [conversationId]);
+  /** The session to resume for a message handled by `roleId`: null unless that same role created it (session_role). */
+  async getConversationSession(conversationId: string, roleId: string): Promise<string | null> {
+    const r = await this.db.query<{ session_id: string | null }>("SELECT session_id FROM conversations WHERE id = $1 AND session_role = $2", [conversationId, roleId]);
     return r.rows[0]?.session_id ?? null;
   }
 
-  async setConversationSession(conversationId: string, sessionId: string): Promise<void> {
-    await this.db.query("UPDATE conversations SET session_id = $2 WHERE id = $1", [conversationId, sessionId]);
+  async setConversationSession(conversationId: string, sessionId: string, roleId: string): Promise<void> {
+    await this.db.query("UPDATE conversations SET session_id = $2, session_role = $3 WHERE id = $1", [conversationId, sessionId, roleId]);
   }
 
   /** Returns false if the task already existed (dedup). */
