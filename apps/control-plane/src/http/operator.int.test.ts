@@ -5,7 +5,7 @@
  */
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Employee, Orchestrator, Role, TaskInput } from "@ai-employee/core";
+import type { Employee, Orchestrator, Role, RunStatus, SandboxRuntime, TaskInput } from "@ai-employee/core";
 import { loadConfig, type Config } from "../config.js";
 import { Ledger } from "../db/ledger.js";
 import { buildServer } from "./server.js";
@@ -51,9 +51,20 @@ describe("operator routes", () => {
     async schedule() {},
   };
 
+  /** Sandbox adapters the server can ask; each test sets what it needs. */
+  let runtimes: Record<string, SandboxRuntime> = {};
+  const fakeRuntime = (name: string, o: { status?: (id: string) => Promise<RunStatus>; logs?: (id: string, tail: number) => Promise<string[]> }): SandboxRuntime => ({
+    name,
+    start: async () => ({ adapter: name, externalId: "x" }),
+    wait: async () => ({ code: 0 }),
+    cancel: async () => {},
+    ...(o.status ? { status: (h) => o.status!(h.externalId) } : {}),
+    ...(o.logs ? { logs: (h, { tail }) => o.logs!(h.externalId, tail) } : {}),
+  });
+
   const boot = (over: Record<string, string> = {}, tg = new NoopTelegramClient(), clickup = new NoopClickUpClient()) => {
     const config: Config = loadConfig({ ...env, ...over });
-    const app = buildServer({ config, ledger, orchestrator, employees: new Map([mk("dev"), mk("other")].map((e) => [e.id, e])), slack: new NoopSlackClient(), clickup, telegram: tg });
+    const app = buildServer({ config, ledger, orchestrator, employees: new Map([mk("dev"), mk("other")].map((e) => [e.id, e])), slack: new NoopSlackClient(), clickup, telegram: tg, runtimes });
     return { app, tg, clickup };
   };
 
@@ -395,6 +406,171 @@ describe("operator routes", () => {
       const op2 = await agent("operator");
       expect((await off.app.inject({ method: "POST", url: "/schedules", headers: op2.headers, payload: { name: "tg-off", cron: "0 9 * * *", prompt: "x", deliverTo: { channel: "telegram" } } })).statusCode).toBe(400);
       await off.app.close();
+    });
+  });
+
+  describe("sandbox visibility: task_runtime, task_logs, employee_status", () => {
+    const running = async (adapter: string, externalId: string, role = "worker") => {
+      const t = await agent(role, { status: "running" });
+      await ledger.setStatus(t.id, "running", { runHandle: { adapter, externalId } });
+      return t;
+    };
+
+    it("401s without a token and 403s a role without `operate`, on both routes", async () => {
+      const { app } = boot();
+      const w = await agent("worker");
+      for (const route of ["runtime", "logs"]) {
+        expect((await app.inject({ method: "GET", url: `/operator/tasks/${w.id}/${route}` })).statusCode).toBe(401);
+        const r = await app.inject({ method: "GET", url: `/operator/tasks/${w.id}/${route}`, headers: w.headers });
+        expect(r.statusCode).toBe(403);
+        expect((r.json() as { error: string }).error).toContain('"operate"');
+      }
+      await app.close();
+    });
+
+    it("task_runtime: asks the adapter and reports running / ended with times and exit code; not_started without a handle", async () => {
+      runtimes = {
+        cloudrun: fakeRuntime("cloudrun", {
+          status: async (id) => (id === "exec-live" ? { state: "running", startedAt: "2026-10-17T10:00:00.000Z" } : { state: "ended", startedAt: "2026-10-17T10:00:00.000Z", endedAt: "2026-10-17T10:09:00.000Z", exitCode: 1, reason: "ContainerFailed" }),
+        }),
+      };
+      const { app } = boot();
+      const op = await agent("operator");
+      const get = (id: string) => app.inject({ method: "GET", url: `/operator/tasks/${encodeURIComponent(id)}/runtime`, headers: op.headers });
+      const live = await running("cloudrun", "exec-live");
+      expect((await get(live.id)).json()).toMatchObject({ taskId: live.id, role: "worker", status: "running", sandbox: { adapter: "cloudrun", externalId: "exec-live", state: "running", startedAt: "2026-10-17T10:00:00.000Z" } });
+      const dead = await running("cloudrun", "exec-dead");
+      expect((await get(dead.id)).json()).toMatchObject({ sandbox: { state: "ended", endedAt: "2026-10-17T10:09:00.000Z", exitCode: 1, reason: "ContainerFailed" } });
+      const queued = await agent("worker");
+      expect((await get(queued.id)).json()).toMatchObject({ sandbox: { adapter: null, externalId: null, state: "not_started" } });
+      const foreign = await agent("worker", { employee: "other" });
+      expect((await get(foreign.id)).statusCode).toBe(404);
+      await app.close();
+    });
+
+    it("task_runtime: an adapter that cannot report, is not registered, or throws is `unknown` with the reason, not a 500", async () => {
+      runtimes = {
+        local: fakeRuntime("local", {}),
+        broken: fakeRuntime("broken", { status: async () => { throw new Error("api down"); } }),
+      };
+      const { app } = boot();
+      const op = await agent("operator");
+      const sandboxOf = async (adapter: string) => ((await app.inject({ method: "GET", url: `/operator/tasks/${(await running(adapter, "e")).id}/runtime`, headers: op.headers })).json() as { sandbox: { state: string; error: string } }).sandbox;
+      expect(await sandboxOf("local")).toMatchObject({ state: "unknown", error: expect.stringContaining("cannot report") });
+      expect(await sandboxOf("nope")).toMatchObject({ state: "unknown", error: expect.stringContaining("no nope runtime") });
+      expect(await sandboxOf("broken")).toMatchObject({ state: "unknown", error: "api down" });
+      await app.close();
+    });
+
+    it("task_logs: returns the adapter's tail (tail honoured, default 100); 409 before a sandbox exists; 501 if the adapter cannot; 502 if reading fails; 400 on a bad tail", async () => {
+      const asked: number[] = [];
+      runtimes = {
+        cloudrun: fakeRuntime("cloudrun", { logs: async (id, tail) => { asked.push(tail); if (id === "boom") throw new Error("403 logging.viewer missing"); return ["l1", "l2", "l3"].slice(-tail); } }),
+        local: fakeRuntime("local", {}),
+      };
+      const { app } = boot();
+      const op = await agent("operator");
+      const get = (id: string, qs = "") => app.inject({ method: "GET", url: `/operator/tasks/${encodeURIComponent(id)}/logs${qs}`, headers: op.headers });
+      const t = await running("cloudrun", "exec-1");
+      expect((await get(t.id)).json()).toEqual({ taskId: t.id, adapter: "cloudrun", externalId: "exec-1", lines: ["l1", "l2", "l3"] });
+      expect(((await get(t.id, "?tail=2")).json() as { lines: string[] }).lines).toEqual(["l2", "l3"]);
+      expect(asked).toEqual([100, 2]);
+      expect((await get(t.id, "?tail=0")).statusCode).toBe(400);
+      expect((await get(t.id, "?tail=501")).statusCode).toBe(400);
+      expect((await get((await agent("worker")).id)).statusCode).toBe(409);
+      const loc = await get((await running("local", "x")).id);
+      expect(loc.statusCode).toBe(501);
+      expect((loc.json() as { error: string }).error).toContain("cannot provide sandbox logs");
+      const bad = await get((await running("cloudrun", "boom")).id);
+      expect(bad.statusCode).toBe(502);
+      expect((bad.json() as { error: string }).error).toContain("logging.viewer");
+      expect((await get((await agent("worker", { employee: "other" })).id)).statusCode).toBe(404);
+      await app.close();
+    });
+
+    it("employee_status: each active task carries sandbox running/ended (+ endedAt); queued tasks and silent adapters are `not_started` / `unknown`", async () => {
+      runtimes = { cloudrun: fakeRuntime("cloudrun", { status: async (id) => (id === "up" ? { state: "running" } : { state: "ended", endedAt: "2026-10-17T10:09:00.000Z" }) }) };
+      const { app } = boot();
+      const me = await agent("worker", { status: "running" });
+      const up = await running("cloudrun", "up");
+      const ghost = await running("cloudrun", "down");
+      const queued = await agent("worker");
+      await ledger.setStatus(queued.id, "queued");
+      const b = (await app.inject({ method: "GET", url: "/agents/self/status", headers: me.headers })).json() as { active: { id: string; sandbox: { state: string; endedAt?: string } }[] };
+      const sb = (id: string) => b.active.find((t) => t.id === id)!.sandbox;
+      expect(sb(up.id)).toEqual({ state: "running" });
+      expect(sb(ghost.id)).toEqual({ state: "ended", endedAt: "2026-10-17T10:09:00.000Z" });
+      expect(sb(queued.id)).toEqual({ state: "not_started" });
+      await app.close();
+    });
+  });
+
+  describe("note_for_owner_session: POST /agents/self/owner-note, GET /notes, POST /notes/:id/ack", () => {
+    const ADMIN = { ADMIN_TOKEN: "admin-secret-fake" };
+    const bearer = { authorization: "Bearer admin-secret-fake" };
+
+    it("any role stores a note quietly (nothing is sent to Telegram); 401 without a token; 400 on empty text", async () => {
+      const { app, tg } = boot({ ...TG, ...ADMIN });
+      const w = await agent("worker");
+      const before = tg.messages.length;
+      expect((await app.inject({ method: "POST", url: "/agents/self/owner-note", payload: { text: "x" } })).statusCode).toBe(401);
+      expect((await app.inject({ method: "POST", url: "/agents/self/owner-note", headers: w.headers, payload: { text: "" } })).statusCode).toBe(400);
+      const r = await app.inject({ method: "POST", url: "/agents/self/owner-note", headers: w.headers, payload: { text: "run `pnpm gen:build billing` locally" } });
+      expect(r.statusCode).toBe(201);
+      expect((r.json() as { id: number }).id).toBeGreaterThan(0);
+      expect(tg.messages).toHaveLength(before);
+      await app.close();
+    });
+
+    it("GET /notes is an admin route: ADMIN_TOKEN bearer when set, open when not; lists oldest first with provenance", async () => {
+      const { app } = boot(ADMIN);
+      const w = await agent("worker");
+      const a = (await app.inject({ method: "POST", url: "/agents/self/owner-note", headers: w.headers, payload: { text: "first" } })).json() as { id: number };
+      const b = (await app.inject({ method: "POST", url: "/agents/self/owner-note", headers: w.headers, payload: { text: "second" } })).json() as { id: number };
+      expect((await app.inject({ method: "GET", url: "/notes" })).statusCode).toBe(401);
+      expect((await app.inject({ method: "GET", url: "/notes", headers: { authorization: "Bearer wrong" } })).statusCode).toBe(401);
+      const res = await app.inject({ method: "GET", url: `/notes?since=${a.id - 1}`, headers: bearer });
+      const notes = (res.json() as { notes: { id: number; text: string; employee: string; task: string; role: string; ackedAt: string | null }[] }).notes;
+      expect(notes.map((n) => n.text)).toEqual(["first", "second"]);
+      expect(notes[0]).toMatchObject({ id: a.id, employee: "dev", task: w.id, role: "worker", ackedAt: null });
+      expect(((await app.inject({ method: "GET", url: `/notes?since=${a.id}`, headers: bearer })).json() as { notes: { id: number }[] }).notes.map((n) => n.id)).toEqual([b.id]);
+      expect((await app.inject({ method: "GET", url: "/notes?since=abc", headers: bearer })).statusCode).toBe(400);
+      await app.close();
+      const open = boot();
+      expect((await open.app.inject({ method: "GET", url: "/notes" })).statusCode).toBe(200);
+      await open.app.close();
+    });
+
+    it("ack hides a note from the default poll (all=1 still shows it), is idempotent, and needs the admin token; unknown / bad ids are 404 / 400", async () => {
+      const { app } = boot(ADMIN);
+      const w = await agent("worker");
+      const { id } = (await app.inject({ method: "POST", url: "/agents/self/owner-note", headers: w.headers, payload: { text: "ack me" } })).json() as { id: number };
+      expect((await app.inject({ method: "POST", url: `/notes/${id}/ack` })).statusCode).toBe(401);
+      const ack = await app.inject({ method: "POST", url: `/notes/${id}/ack`, headers: bearer });
+      expect(ack.statusCode).toBe(200);
+      const first = (ack.json() as { ackedAt: string }).ackedAt;
+      expect(first).toBeTruthy();
+      expect(((await app.inject({ method: "POST", url: `/notes/${id}/ack`, headers: bearer })).json() as { ackedAt: string }).ackedAt).toBe(first);
+      const pending = (await app.inject({ method: "GET", url: `/notes?since=${id - 1}`, headers: bearer })).json() as { notes: { id: number }[] };
+      expect(pending.notes.map((n) => n.id)).not.toContain(id);
+      const all = (await app.inject({ method: "GET", url: `/notes?since=${id - 1}&all=1`, headers: bearer })).json() as { notes: { id: number }[] };
+      expect(all.notes.map((n) => n.id)).toContain(id);
+      expect((await app.inject({ method: "POST", url: "/notes/99999999/ack", headers: bearer })).statusCode).toBe(404);
+      expect((await app.inject({ method: "POST", url: "/notes/abc/ack", headers: bearer })).statusCode).toBe(400);
+      await app.close();
+    });
+
+    it("caps notes per task and filters by employee", async () => {
+      const { app } = boot();
+      const w = await agent("worker");
+      const post = (h: Record<string, string>, text: string) => app.inject({ method: "POST", url: "/agents/self/owner-note", headers: h, payload: { text } });
+      for (let i = 0; i < 50; i++) await ledger.addOwnerNote({ employeeId: "dev", fromTaskId: w.id, roleId: "worker", text: `bulk ${i}` });
+      expect((await post(w.headers, "one too many")).statusCode).toBe(429);
+      const o = await agent("worker", { employee: "other" });
+      const { id } = (await post(o.headers, "from other")).json() as { id: number };
+      const only = (await app.inject({ method: "GET", url: `/notes?since=${id - 1}&employee=other` })).json() as { notes: { text: string; employee: string }[] };
+      expect(only.notes).toEqual([expect.objectContaining({ text: "from other", employee: "other" })]);
+      await app.close();
     });
   });
 });

@@ -100,6 +100,16 @@ export interface AgentMessageRow {
   created_at: Date;
 }
 
+export interface OwnerNoteRow {
+  id: string; // bigserial arrives as a string
+  employee_id: string;
+  from_task_id: string | null;
+  role_id: string | null;
+  text: string;
+  created_at: Date;
+  acked_at: Date | null;
+}
+
 export interface TaskRow {
   id: string;
   employee_id: string;
@@ -184,6 +194,33 @@ export class Ledger {
 
   async getTask(id: string): Promise<TaskRow | undefined> {
     const r = await this.db.query<TaskRow>("SELECT * FROM tasks WHERE id = $1", [id]);
+    return r.rows[0];
+  }
+
+  // ---- notes for the owner's local session
+  async addOwnerNote(n: { employeeId: string; fromTaskId: string; roleId: string; text: string }): Promise<string> {
+    const r = await this.db.query<{ id: string }>("INSERT INTO owner_notes (employee_id, from_task_id, role_id, text) VALUES ($1,$2,$3,$4) RETURNING id", [n.employeeId, n.fromTaskId, n.roleId, n.text]);
+    return r.rows[0]!.id;
+  }
+
+  async countOwnerNotesFromTask(taskId: string): Promise<number> {
+    const r = await this.db.query<{ n: string }>("SELECT count(*) AS n FROM owner_notes WHERE from_task_id = $1", [taskId]);
+    return Number(r.rows[0]!.n);
+  }
+
+  /** Notes after `since` (id), oldest first. Acknowledged ones only when `includeAcked`. */
+  async listOwnerNotes(o: { since: number; includeAcked: boolean; employeeId?: string; limit: number }): Promise<OwnerNoteRow[]> {
+    const r = await this.db.query<OwnerNoteRow>(
+      `SELECT * FROM owner_notes WHERE id > $1 ${o.includeAcked ? "" : "AND acked_at IS NULL"} ${o.employeeId ? "AND employee_id = $3" : ""}
+       ORDER BY id LIMIT $2`,
+      o.employeeId ? [o.since, o.limit, o.employeeId] : [o.since, o.limit],
+    );
+    return r.rows;
+  }
+
+  /** Idempotent: a second ack keeps the first time. Undefined when there is no such note. */
+  async ackOwnerNote(id: number): Promise<OwnerNoteRow | undefined> {
+    const r = await this.db.query<OwnerNoteRow>("UPDATE owner_notes SET acked_at = COALESCE(acked_at, now()) WHERE id = $1 RETURNING *", [id]);
     return r.rows[0];
   }
 

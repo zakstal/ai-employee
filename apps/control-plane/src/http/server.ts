@@ -1,9 +1,9 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { resolveRole, roleGrants, type Employee, type Orchestrator, type Role, type RunnerEvent, type TaskSource } from "@ai-employee/core";
+import { resolveRole, roleGrants, type Employee, type Orchestrator, type Role, type RunnerEvent, type RunStatus, type SandboxRuntime, type TaskSource } from "@ai-employee/core";
 import type { Config } from "../config.js";
-import { randomBase62, type DeliverTo, type Ledger, type TaskRow } from "../db/ledger.js";
+import { randomBase62, type DeliverTo, type Ledger, type OwnerNoteRow, type TaskRow } from "../db/ledger.js";
 import { verifySlackSignature } from "../slack/verify.js";
 import type { SlackClient } from "../slack/client.js";
 import { verifyClickUpSignature } from "../clickup/verify.js";
@@ -34,6 +34,8 @@ export interface ServerDeps {
   slack: SlackClient;
   clickup: ClickUpClient;
   telegram?: TelegramClient;
+  /** Sandbox adapters by name, for the operator's runtime/logs probes. Defaults to the workflow deps' (the running control plane's). */
+  runtimes?: Record<string, SandboxRuntime>;
   /** Claude account usage, settings and limit handling. Built from `config` and `ledger` when omitted; tests inject one with a fake fetch. */
   claude?: ClaudeService;
 }
@@ -103,6 +105,30 @@ const TaskEventsQuery = z.object({ since: z.coerce.number().int().nonnegative().
 
 const MAX_OWNER_MESSAGES_PER_HOUR = 20; // per task
 const PROGRESS_CHARS = 240;
+
+const OwnerNoteBody = z.object({ text: z.string().min(1).max(20_000) });
+const MAX_OWNER_NOTES_PER_TASK = 50;
+const NotesQuery = z.object({
+  since: z.coerce.number().int().nonnegative().default(0),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  /** 1/true: also the notes already acknowledged. */
+  all: z.enum(["0", "1", "true", "false"]).default("0"),
+  employee: z.string().min(1).optional(),
+});
+const TaskLogsQuery = z.object({ tail: z.coerce.number().int().min(1).max(500).default(100) });
+const SANDBOX_PROBE_TIMEOUT_MS = 5000;
+
+/** A task's sandbox as the adapter sees it; never throws (a probe that fails is reported as `unknown` with the reason). */
+interface SandboxView {
+  adapter: string | null;
+  externalId: string | null;
+  state: RunStatus["state"] | "not_started" | "unknown";
+  startedAt?: string;
+  endedAt?: string;
+  exitCode?: number;
+  reason?: string;
+  error?: string;
+}
 
 const AskBody = z.object({ question: z.string().min(1) });
 
@@ -242,6 +268,30 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const { config, ledger, orchestrator, employees, slack, clickup } = deps;
   const telegram = deps.telegram ?? new NoopTelegramClient();
   const seenUpdates = new Set<number>(); // Telegram retries a webhook that was slow or failed; the task key dedupes too, this also covers answers to ask_human
+  const getRuntimes = (): Record<string, SandboxRuntime> => {
+    if (deps.runtimes) return deps.runtimes;
+    try {
+      return workflowDeps().runtimes;
+    } catch {
+      return {}; // workflow deps are not configured (a trimmed test boot)
+    }
+  };
+  const sandboxOf = async (t: TaskRow): Promise<SandboxView> => {
+    const h = t.run_handle;
+    if (!h) return { adapter: null, externalId: null, state: "not_started" };
+    const view = { adapter: h.adapter, externalId: h.externalId };
+    const rt = getRuntimes()[h.adapter];
+    if (!rt?.status) return { ...view, state: "unknown", error: rt ? `the ${h.adapter} adapter cannot report sandbox status` : `no ${h.adapter} runtime is registered in this control plane` };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const st = await Promise.race([rt.status(h), new Promise<never>((_, rej) => (timer = setTimeout(() => rej(new Error("sandbox status timed out")), SANDBOX_PROBE_TIMEOUT_MS)))]);
+      return { ...view, ...st };
+    } catch (e) {
+      return { ...view, state: "unknown", error: (e as Error).message };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   const claude = deps.claude ?? new ClaudeService({ config, ledger, clickup, telegram });
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 
@@ -618,6 +668,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       claude.snapshot(),
     ]);
     const progress = await ledger.taskProgress([...active, ...finished].map((t) => t.id));
+    const sandboxes = new Map(await Promise.all(active.map(async (t) => [t.id, await sandboxOf(t)] as const)));
     return {
       employee: auth.employee.id,
       now: new Date(now).toISOString(),
@@ -636,6 +687,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           account: t.claude_account,
           costUsd: progress.get(t.id)?.costUsd ?? null,
           progress: oneLine(progress.get(t.id)?.text, PROGRESS_CHARS) || null,
+          sandbox: (({ state, endedAt }) => ({ state, ...(endedAt ? { endedAt } : {}) }))(sandboxes.get(t.id)!),
           ...(t.status === "awaiting_input" && t.question ? { question: oneLine(t.question, PROGRESS_CHARS) } : {}),
         })),
       ),
@@ -693,6 +745,34 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return { taskId: t.id, role: t.role_id, status: t.status, events: events.slice(-q.data.limit) };
   });
 
+  // task_runtime: the task's sandbox as the adapter reports it (Cloud Run execution / warm run), not the ledger's belief.
+  app.get<{ Params: { id: string } }>("/operator/tasks/:id/runtime", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth || !requireCapability(auth, reply, "operate")) return;
+    const t = await employeeTask(auth, req.params.id);
+    if (!t) return reply.code(404).send({ error: "not found" });
+    return { taskId: t.id, role: t.role_id, status: t.status, createdAt: t.created_at, updatedAt: t.updated_at, sandbox: await sandboxOf(t) };
+  });
+
+  // task_logs: the tail of the sandbox's own log, if the adapter can read it.
+  app.get<{ Params: { id: string } }>("/operator/tasks/:id/logs", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth || !requireCapability(auth, reply, "operate")) return;
+    const q = TaskLogsQuery.safeParse(req.query);
+    if (!q.success) return reply.code(400).send({ error: q.error.flatten() });
+    const t = await employeeTask(auth, req.params.id);
+    if (!t) return reply.code(404).send({ error: "not found" });
+    if (!t.run_handle) return reply.code(409).send({ error: `task ${t.id} has no sandbox yet (status ${t.status})` });
+    const rt = getRuntimes()[t.run_handle.adapter];
+    if (!rt) return reply.code(501).send({ error: `no ${t.run_handle.adapter} runtime is registered in this control plane` });
+    if (!rt.logs) return reply.code(501).send({ error: `the ${t.run_handle.adapter} adapter cannot provide sandbox logs; use task_events for what the agent did` });
+    try {
+      return { taskId: t.id, adapter: t.run_handle.adapter, externalId: t.run_handle.externalId, lines: await rt.logs(t.run_handle, { tail: q.data.tail }) };
+    } catch (e) {
+      return reply.code(502).send({ error: `could not read sandbox logs: ${(e as Error).message}` });
+    }
+  });
+
   // Same validation as PUT /settings/claude (the schema); GET returns the settings plus the account snapshot.
   app.get("/operator/settings/claude", async (req, reply) => {
     const auth = await authenticateAgent(req, reply, ledger, employees);
@@ -730,6 +810,34 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const message = (e as Error).message;
       return reply.code(message.startsWith("no owner channel") ? 409 : 502).send({ error: message });
     }
+  });
+
+  // ---- notes for the owner's local Claude Code session: any role writes (quietly: stored only, nothing is sent to a chat);
+  // the local session polls GET /notes and acknowledges. The read side is an admin route, authenticated like /usage.
+  app.post("/agents/self/owner-note", async (req, reply) => {
+    const auth = await authenticateAgent(req, reply, ledger, employees);
+    if (!auth) return;
+    const body = OwnerNoteBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    if ((await ledger.countOwnerNotesFromTask(auth.taskId)) >= MAX_OWNER_NOTES_PER_TASK) return reply.code(429).send({ error: `at most ${MAX_OWNER_NOTES_PER_TASK} notes per task` });
+    const id = await ledger.addOwnerNote({ employeeId: auth.employee.id, fromTaskId: auth.taskId, roleId: auth.role.id, text: body.data.text });
+    return reply.code(201).send({ id: Number(id) });
+  });
+
+  const noteView = (n: OwnerNoteRow) => ({ id: Number(n.id), employee: n.employee_id, task: n.from_task_id, role: n.role_id, text: n.text, createdAt: n.created_at, ackedAt: n.acked_at });
+  app.get("/notes", async (req, reply) => {
+    if (!admin(req, reply)) return reply;
+    const q = NotesQuery.safeParse(req.query);
+    if (!q.success) return reply.code(400).send({ error: q.error.flatten() });
+    const rows = await ledger.listOwnerNotes({ since: q.data.since, includeAcked: q.data.all === "1" || q.data.all === "true", limit: q.data.limit, ...(q.data.employee ? { employeeId: q.data.employee } : {}) });
+    return { notes: rows.map(noteView) };
+  });
+  app.post<{ Params: { id: string } }>("/notes/:id/ack", async (req, reply) => {
+    if (!admin(req, reply)) return reply;
+    const id = /^\d+$/.test(req.params.id) ? Number(req.params.id) : NaN;
+    if (!Number.isSafeInteger(id)) return reply.code(400).send({ error: "note id must be a number" });
+    const n = await ledger.ackOwnerNote(id);
+    return n ? noteView(n) : reply.code(404).send({ error: "not found" });
   });
 
   // The employee's whole recent history rather than just the caller's children (the manager coordinates work it
