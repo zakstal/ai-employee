@@ -102,12 +102,15 @@ describe("ai_employee MCP tools", () => {
         "list_schedules",
         "list_tasks",
         "message_owner",
+        "note_for_owner_session",
         "read_messages",
         "send_message",
         "spawn_agent",
         "start_task",
         "start_workstream",
         "task_events",
+        "task_logs",
+        "task_runtime",
         "usage_status",
         "wait_for",
       ]);
@@ -627,6 +630,48 @@ describe("ai_employee MCP tools", () => {
     const none = await call("task_events", { task_id: "t1" }, { body: { taskId: "t1", role: "worker", status: "done", events: [] } });
     expect(none.req.url).toBe("/operator/tasks/t1/events?since=0&limit=30");
     expect(none.text).toBe("Task t1 (worker) is done; no new events.");
+  }, 40_000);
+
+  it("task_runtime GETs /operator/tasks/:id/runtime and renders adapter, state, times, exit code; says so when there is no sandbox or the adapter could not tell", async () => {
+    const ended = await call("task_runtime", { task_id: "agent:t1:x" }, {
+      body: { taskId: "agent:t1:x", role: "supervisor", status: "running", sandbox: { adapter: "cloudrun", externalId: "projects/p/locations/r/jobs/j/executions/e1", state: "ended", startedAt: "2026-10-17T10:00:00.000Z", endedAt: "2026-10-17T10:09:00.000Z", exitCode: 1, reason: "ContainerFailed" } },
+    });
+    expect(ended.req).toMatchObject({ method: "GET", url: "/operator/tasks/agent%3At1%3Ax/runtime" });
+    expect(ended.text).toBe([
+      "Task agent:t1:x (supervisor) is running in the ledger.",
+      "sandbox: cloudrun projects/p/locations/r/jobs/j/executions/e1 is ENDED",
+      "started: 2026-10-17T10:00:00.000Z",
+      "ended: 2026-10-17T10:09:00.000Z",
+      "exit code: 1 (ContainerFailed)",
+    ].join("\n"));
+    const none = await call("task_runtime", { task_id: "t2" }, { body: { taskId: "t2", role: "worker", status: "queued", sandbox: { adapter: null, externalId: null, state: "not_started" } } });
+    expect(none.text).toContain("not started yet");
+    const unknown = await call("task_runtime", { task_id: "t3" }, { body: { taskId: "t3", role: "worker", status: "running", sandbox: { adapter: "local", externalId: "t3", state: "unknown", error: "the local adapter cannot report sandbox status" } } });
+    expect(unknown.text).toContain("is UNKNOWN");
+    expect(unknown.text).toContain("could not tell: the local adapter cannot report sandbox status");
+    const denied = await call("task_runtime", { task_id: "t4" }, { status: 403, body: { error: 'role assistant lacks the "operate" capability' } });
+    expect(denied).toMatchObject({ isError: true, text: 'role assistant lacks the "operate" capability' });
+  }, 40_000);
+
+  it("task_logs GETs /operator/tasks/:id/logs?tail= (default 100) and prints the lines; an adapter without logs comes back as an error", async () => {
+    const r = await call("task_logs", { task_id: "t1", tail: 3 }, { body: { taskId: "t1", adapter: "warm", externalId: "t1", lines: ["a", "b", "c"] } });
+    expect(r.req).toMatchObject({ method: "GET", url: "/operator/tasks/t1/logs?tail=3" });
+    expect(r.text).toBe("Last 3 log lines of task t1 (warm t1):\na\nb\nc");
+    const dflt = await call("task_logs", { task_id: "t1" }, { body: { taskId: "t1", adapter: "warm", externalId: "t1", lines: [] } });
+    expect(dflt.req.url).toBe("/operator/tasks/t1/logs?tail=100");
+    expect(dflt.text).toContain("No log lines");
+    const long = await call("task_logs", { task_id: "t1" }, { body: { taskId: "t1", adapter: "warm", externalId: "t1", lines: ["x".repeat(3000)] } });
+    expect(long.text.length).toBeLessThan(1200);
+    const unsupported = await call("task_logs", { task_id: "t1" }, { status: 501, body: { error: "the local adapter cannot provide sandbox logs; use task_events for what the agent did" } });
+    expect(unsupported).toMatchObject({ isError: true, text: expect.stringContaining("cannot provide sandbox logs") });
+  }, 40_000);
+
+  it("note_for_owner_session POSTs /agents/self/owner-note and says nothing was sent to a chat", async () => {
+    const r = await call("note_for_owner_session", { text: "run pnpm gen:build billing locally" }, { status: 201, body: { id: 12 } });
+    expect(r.req).toMatchObject({ method: "POST", url: "/agents/self/owner-note", body: { text: "run pnpm gen:build billing locally" } });
+    expect(r.text).toBe("Noted for the owner's local session (note 12). Nothing was sent to a chat.");
+    const limited = await call("note_for_owner_session", { text: "again" }, { status: 429, body: { error: "at most 50 notes per task" } });
+    expect(limited).toMatchObject({ isError: true, text: "at most 50 notes per task" });
   }, 40_000);
 
   it("claude_settings: get is a GET, set is a PUT of only the passed fields, validation errors come back as errors", async () => {

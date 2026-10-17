@@ -21,6 +21,8 @@ export interface StatusBody {
     account: string | null;
     costUsd: number | null;
     progress: string | null;
+    /** What the sandbox adapter says; absent from an older control plane. */
+    sandbox?: { state: "running" | "ended" | "lost" | "not_started" | "unknown"; endedAt?: string };
     question?: string;
   }[];
   finished: { id: string; role: string; status: string; channel: string; finishedAt: string; costUsd: number | null; result: string }[];
@@ -43,6 +45,17 @@ const pct = (u: number | null): string => (u === null ? "?" : `${Math.round(u * 
 /** A table row: a pipe inside a field must not add a column. */
 const row = (...fields: string[]): string => fields.map((f) => f.replace(/\|/g, "/")).join(" | ");
 
+/** "running" / "ended 12m ago" / "LOST", for the status column. Empty when there is nothing to add (no sandbox yet, or not reported). */
+function sandboxNote(t: StatusBody["active"][number], now: string): string {
+  const sb = t.sandbox;
+  if (!sb || sb.state === "not_started") return "";
+  if (sb.state === "running") return " [sandbox running]";
+  if (sb.state === "lost") return " [sandbox LOST]";
+  if (sb.state === "unknown") return " [sandbox ?]";
+  const ago = sb.endedAt ? Math.max(0, Math.round((Date.parse(now) - Date.parse(sb.endedAt)) / 1000)) : NaN;
+  return ` [sandbox ENDED${Number.isFinite(ago) ? ` ${duration(ago)} ago` : ""}]`;
+}
+
 export function renderStatus(b: StatusBody): string {
   const out: string[] = [`${b.employee} @ ${b.now} (this task: ${b.currentTask})`, ""];
   out.push(`RUNNING NOW (${b.active.length})`);
@@ -52,7 +65,7 @@ export function renderStatus(b: StatusBody): string {
     for (const t of b.active) {
       const lineage = t.parent ? `${t.parent} / ${t.root}` : "root";
       const latest = t.question ? `ASKS: ${t.question}` : (t.progress ?? "(no output yet)");
-      out.push(row(t.id, t.role, t.status, t.channel, lineage, duration(t.ageSec), t.account ?? "-", usd(t.costUsd), latest));
+      out.push(row(t.id, t.role, `${t.status}${sandboxNote(t, b.now)}`, t.channel, lineage, duration(t.ageSec), t.account ?? "-", usd(t.costUsd), latest));
     }
   }
   out.push("", `FINISHED LAST 24H (${b.finished.length})`);

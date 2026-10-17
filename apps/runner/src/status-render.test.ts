@@ -44,6 +44,27 @@ describe("renderStatus", () => {
     expect(t).toContain("slack:2 | assistant | awaiting_input | telegram | root | 5m | work | - | ASKS: which branch?");
   });
 
+  it("shows the sandbox beside the status: running, ended N ago (a ghost), lost; nothing before a sandbox exists or from an older control plane", () => {
+    const t = renderStatus(body({
+      active: [
+        task({ id: "a", sandbox: { state: "running" } }),
+        task({ id: "b", sandbox: { state: "ended", endedAt: "2026-10-16T11:48:00.000Z" } }),
+        task({ id: "c", sandbox: { state: "ended" } }),
+        task({ id: "d", sandbox: { state: "lost" } }),
+        task({ id: "e", sandbox: { state: "unknown" } }),
+        task({ id: "f", sandbox: { state: "not_started" } }),
+        task({ id: "g" }),
+      ],
+    }));
+    expect(t).toContain("a | assistant | running [sandbox running] | telegram");
+    expect(t).toContain("b | assistant | running [sandbox ENDED 12m ago] | telegram");
+    expect(t).toContain("c | assistant | running [sandbox ENDED] | telegram");
+    expect(t).toContain("d | assistant | running [sandbox LOST] | telegram");
+    expect(t).toContain("e | assistant | running [sandbox ?] | telegram");
+    expect(t).toContain("f | assistant | running | telegram");
+    expect(t).toContain("g | assistant | running | telegram");
+  });
+
   it("a pipe in progress text cannot break the table", () => {
     expect(renderStatus(body({ active: [task({ progress: "a | b" })] }))).toContain("a / b");
   });
