@@ -11,7 +11,8 @@ resource "google_project_iam_member" "control_plane" {
   for_each = toset([
     "roles/cloudsql.client",
     "roles/secretmanager.secretAccessor",
-    "roles/run.developer", # lets the control plane start/override the runner Job
+    "roles/run.developer",  # lets the control plane start/override the runner Job
+    "roles/logging.viewer", # task_logs reads Cloud Run execution logs
   ])
 
   project = var.project_id

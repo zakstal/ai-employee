@@ -49,6 +49,7 @@ resource "google_project_iam_member" "vm" {
     "roles/cloudsql.client",         # cloud-sql-proxy sidecar
     "roles/run.developer",           # trigger the runner-ops Cloud Run Job (Azure tasks)
     "roles/logging.logWriter",
+    "roles/logging.viewer", # task_logs reads Cloud Run execution logs
     "roles/monitoring.metricWriter",
   ])
 
