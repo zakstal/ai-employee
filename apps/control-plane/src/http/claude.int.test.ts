@@ -84,6 +84,7 @@ describe("claude accounts", () => {
   beforeEach(async () => {
     await pool.query("DELETE FROM engine_settings");
     await pool.query("DELETE FROM claude_account_usage");
+    await pool.query("DELETE FROM claude_account_usage_history");
     clickup.chatMessages.length = 0;
     for (const k of Object.keys(fake)) delete fake[k];
   });
@@ -133,7 +134,7 @@ describe("claude accounts", () => {
   it("admin routes need the admin token when ADMIN_TOKEN is set", async () => {
     const locked = buildServer({ config: { ...config, ADMIN_TOKEN: "test-admin-token-123" }, ledger, orchestrator: new DbosOrchestrator(ledger), employees: new Map([["dev", employee]]), slack: new NoopSlackClient(), clickup, claude: new ClaudeService({ config, ledger, clickup, fetch: fakeFetch, now: () => NOW }) });
     const bearer = { authorization: "Bearer test-admin-token-123" };
-    for (const [method, url] of [["GET", "/usage"], ["GET", "/settings/claude"], ["PUT", "/settings/claude"], ["POST", "/usage/refresh"]] as const) {
+    for (const [method, url] of [["GET", "/usage"], ["GET", "/usage/history"], ["GET", "/settings/claude"], ["PUT", "/settings/claude"], ["POST", "/usage/refresh"]] as const) {
       const body = method === "PUT" ? { payload: {} } : {};
       expect((await locked.inject({ method, url, ...body })).statusCode, `${method} ${url} without token`).toBe(401);
       expect((await locked.inject({ method, url, headers: { authorization: "Bearer wrong" }, ...body })).statusCode).toBe(401);
@@ -157,6 +158,21 @@ describe("claude accounts", () => {
       expect(snap.settings).toMatchObject({ limitPolicy: "failover-then-wait" });
       expect(JSON.stringify(snap)).not.toContain("SECRET");
       expect(JSON.stringify(snap)).not.toContain("sk-ant");
+    });
+
+    it("GET /usage/history keeps every probe that read headers, oldest first, and skips failed probes", async () => {
+      fake.work = ok(0.3);
+      fake.personal = ok(0.1);
+      await refresh();
+      fake.work = ok(0.6);
+      await refresh();
+      fake.work = "error";
+      await refresh();
+      const rows = (await app.inject({ method: "GET", url: "/usage/history?since=2000-01-01T00:00:00Z&name=work" })).json() as { name: string; source: string; fiveHour: { utilization: number } }[];
+      expect(rows.map((r) => [r.name, r.source, r.fiveHour.utilization])).toEqual([["work", "probe", 0.3], ["work", "probe", 0.6]]);
+      const all = (await app.inject({ method: "GET", url: "/usage/history?since=2000-01-01T00:00:00Z" })).json() as unknown[];
+      expect(all.length).toBeGreaterThanOrEqual(5); // + personal's three readings
+      expect((await app.inject({ method: "GET", url: "/usage/history?since=nonsense" })).statusCode).toBe(400);
     });
 
     it("a failed probe records last_error and keeps the previous numbers", async () => {

@@ -131,6 +131,16 @@ export interface TaskRow {
 }
 
 /** Plain SQL over the shared ledger. Engine-free; called from workflow steps and HTTP handlers. */
+/** One stored usage reading (claude_account_usage_history). */
+export interface AccountUsageReading {
+  name: string;
+  checkedAt: string;
+  source: "probe" | "limit";
+  fiveHour: { status: string | undefined; utilization: number | undefined; resetsAt: string | undefined };
+  sevenDay: { status: string | undefined; utilization: number | undefined; resetsAt: string | undefined };
+  overage: { status: string | undefined; utilization: number | undefined; inUse: boolean | undefined };
+}
+
 export class Ledger {
   constructor(private db: pg.Pool) {}
 
@@ -424,6 +434,16 @@ export class Ledger {
         u.checkedAt ?? new Date(), u.lastError ?? null,
       ],
     );
+    await this.db.query(
+      `INSERT INTO claude_account_usage_history (name, checked_at, source, five_hour_status, five_hour_utilization, five_hour_reset,
+         seven_day_status, seven_day_utilization, seven_day_reset, overage_status, overage_utilization, overage_in_use)
+       VALUES ($1,$2,'probe',$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [
+        u.name, u.checkedAt ?? new Date(), u.fiveHour.status ?? null, u.fiveHour.utilization ?? null, u.fiveHour.reset ?? null,
+        u.sevenDay.status ?? null, u.sevenDay.utilization ?? null, u.sevenDay.reset ?? null,
+        u.overage.status ?? null, u.overage.utilization ?? null, u.overage.inUse ?? null,
+      ],
+    );
   }
 
   /** A task ended on the limit message: mark that window rejected until its reset, leaving the rest of the row alone. */
@@ -436,6 +456,31 @@ export class Ledger {
          ${col}_reset = COALESCE($3, claude_account_usage.${col}_reset), checked_at = $4`,
       [name, fingerprint, reset ?? null, at],
     );
+    await this.db.query(
+      `INSERT INTO claude_account_usage_history (name, checked_at, source, ${col}_status, ${col}_utilization, ${col}_reset)
+       VALUES ($1,$2,'limit','rejected',1,$3)`,
+      [name, at, reset ?? null],
+    );
+  }
+
+  /** Every usage reading since `since` (optionally one account), oldest first. */
+  async accountUsageHistory(since: Date, until: Date, name?: string): Promise<AccountUsageReading[]> {
+    const r = await this.db.query<Record<string, unknown>>(
+      `SELECT * FROM claude_account_usage_history WHERE checked_at >= $1 AND checked_at <= $2 AND ($3::text IS NULL OR name = $3)
+       ORDER BY checked_at, id`,
+      [since, until, name ?? null],
+    );
+    const n = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+    const t = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+    const d = (v: unknown): string | undefined => (v instanceof Date ? v.toISOString() : undefined);
+    return r.rows.map((row) => ({
+      name: String(row.name),
+      checkedAt: d(row.checked_at)!,
+      source: row.source === "limit" ? "limit" : "probe",
+      fiveHour: { status: t(row.five_hour_status), utilization: n(row.five_hour_utilization), resetsAt: d(row.five_hour_reset) },
+      sevenDay: { status: t(row.seven_day_status), utilization: n(row.seven_day_utilization), resetsAt: d(row.seven_day_reset) },
+      overage: { status: t(row.overage_status), utilization: n(row.overage_utilization), inUse: typeof row.overage_in_use === "boolean" ? row.overage_in_use : undefined },
+    }));
   }
 
   async listAccountUsage(): Promise<AccountUsage[]> {
