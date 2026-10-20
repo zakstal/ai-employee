@@ -392,6 +392,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return false;
   };
   app.get("/usage", async (req, reply) => (admin(req, reply) ? claude.snapshot() : reply));
+  // Every reading, not only the latest: ?since=<Nd|ISO>&until=<ISO>&name=<account> (default the last 7 days).
+  app.get<{ Querystring: { since?: string; until?: string; name?: string } }>("/usage/history", async (req, reply) => {
+    if (!admin(req, reply)) return reply;
+    const range = parseStatsRange(req.query);
+    if (!range) return reply.code(400).send({ error: "bad since/until" });
+    return ledger.accountUsageHistory(range.since, range.until, req.query.name);
+  });
   app.post("/usage/refresh", async (req, reply) => {
     if (!admin(req, reply)) return reply;
     await claude.refresh();
